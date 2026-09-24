@@ -1,6 +1,8 @@
 #ifndef AU_PROJECT_PROJECTACTIONSCONTROLLER_H
 #define AU_PROJECT_PROJECTACTIONSCONTROLLER_H
 
+#include <map>
+
 #include "framework/global/async/asyncable.h"
 #include "framework/global/modularity/ioc.h"
 #include "framework/global/io/ifilesystem.h"
@@ -21,6 +23,7 @@
 #include "trackedit/iprojecthistory.h"
 #include "record/irecordcontroller.h"
 #include "importexport/export/internal/exportconfiguration.h"
+#include "importexport/export/iexporter.h"
 #include "importexport/import/iimporter.h"
 #include "au3cloud/iau3audiocomservice.h"
 #include "au3cloud/iauthorization.h"
@@ -55,6 +58,7 @@ class ProjectActionsController : public IProjectFilesController, public muse::ac
     muse::ContextInject<trackedit::IProjectHistory> projectHistory { this };
     muse::ContextInject<record::IRecordController> recordController { this };
     muse::ContextInject<importexport::IImporter> importer { this };
+    muse::ContextInject<importexport::IExporter> exporter { this };
     muse::ContextInject<au3cloud::IAu3AudioComService> audioComService { this };
     muse::ContextInject<effects::IMissingEffectChecker> missingEffectChecker { this };
 
@@ -89,7 +93,7 @@ private:
     void importFiles(const muse::actions::ActionData& args);
 
     void importStartupMedia(const muse::actions::ActionData& args);
-    muse::Ret processMediaFiles(const muse::io::paths_t& paths);
+    muse::Ret processMediaFiles(const muse::io::paths_t& paths, bool quickEdit = false);
 
     muse::Ret openProject(const muse::io::path_t& path,
                           const muse::String& displayNameOverride = muse::String(), const muse::String& projectId = muse::String());
@@ -123,6 +127,10 @@ private:
     void undo();
     void redo();
 
+    bool isQuickEditProject(const IAudacityProjectPtr& project) const;
+    bool exportQuickEditToSource(const IAudacityProjectPtr& project);
+    std::string formatNameForExtension(const std::string& extension) const;
+
     bool askAboutStoppingCloudSync();
     muse::Ret openPageIfNeed(muse::Uri pageUri);
 
@@ -151,6 +159,20 @@ private:
     bool m_isProjectSaving = false;
     bool m_isProjectClosing = false;
     bool m_isProjectProcessing = false;
+
+    struct QuickEditSource {
+        muse::io::path_t path;
+        //! NOTE: true while the source file matches the project (just opened or just exported back)
+        bool upToDate = true;
+    };
+
+    void startQuickEdit(const IAudacityProjectPtr& project, const muse::io::path_t& sourcePath);
+    bool isQuickEditProjectUpToDate(const IAudacityProjectPtr& project) const;
+
+    //! NOTE: source audio files for projects opened in "quick edit" mode (see --quick-edit),
+    //! keyed by the raw project pointer; saving such a project exports back to this path instead
+    //! of prompting for a project save location
+    std::map<IAudacityProject*, QuickEditSource> m_quickEditSourceFiles;
 
     ProjectBeingDownloaded m_projectBeingDownloaded;
     muse::async::Notification m_projectBeingDownloadedChanged;

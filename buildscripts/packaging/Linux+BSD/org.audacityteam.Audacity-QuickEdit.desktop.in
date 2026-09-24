@@ -1,0 +1,16 @@
+[Desktop Entry]
+# Secondary launcher used as an external "Edit In" target (like Adobe Audition's
+# %F workflow): opens the file for editing and, on save, exports the changes
+# directly back to the same file/location instead of asking where to save an
+# Audacity project. Shown in file managers' "Open With" list, not in the main menu.
+Name=@DESKTOP_LAUNCHER_NAME@ (Quick Edit)
+Type=Application
+Version=1.0
+Icon=audacity@MUSE_APP_INSTALL_SUFFIX@
+Exec=audacity@MUSE_APP_INSTALL_SUFFIX@ --quick-edit %F
+Terminal=false
+NoDisplay=true
+MimeType=audio/x-wav;audio/wav;audio/mpeg;audio/flac;audio/x-flac;audio/ogg;audio/x-aiff;audio/aiff;
+StartupNotify=true
+StartupWMClass=@WINDOW_MANAGER_CLASS@
+Categories=AudioVideo;Audio;AudioVideoEditing;

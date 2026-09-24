@@ -92,6 +92,7 @@ void GuiApp::doStartupScenario(const muse::modularity::ContextPtr& ctxId)
 
     startupScenario->setStartupMediaFiles(options->startup.mediaFiles);
     startupScenario->setRemoveMediaFilesAfterImport(options->startup.removeMediaFilesAfterImport);
+    startupScenario->setQuickEditMode(options->startup.quickEdit);
     if (options->startup.startupUrl.has_value()) {
         startupScenario->setStartupUrl(options->startup.startupUrl.value());
     }
@@ -186,7 +187,7 @@ void GuiApp::onSecondInstanceArgs(const QStringList& args)
             files << file.toQString();
         }
         dispatcher->dispatch("project-import-startup-media",
-                             muse::actions::ActionData::make_arg2<QStringList, bool>(
-                                 files, parsed->startup.removeMediaFilesAfterImport));
+                             muse::actions::ActionData::make_arg3<QStringList, bool, bool>(
+                                 files, parsed->startup.removeMediaFilesAfterImport, parsed->startup.quickEdit));
     }
 }

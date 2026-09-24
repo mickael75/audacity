@@ -34,6 +34,12 @@ endif()
 configure_file(${CMAKE_CURRENT_LIST_DIR}/org.audacityteam.Audacity.desktop.in org.audacityteam.Audacity${MUSE_APP_INSTALL_SUFFIX}.desktop)
 install(FILES ${PROJECT_BINARY_DIR}/org.audacityteam.Audacity${MUSE_APP_INSTALL_SUFFIX}.desktop DESTINATION share/applications)
 
+# Install the "quick edit" desktop entry (external editor / "Open With" integration,
+# e.g. %f-style launchers similar to Adobe Audition's workflow)
+configure_file(${CMAKE_CURRENT_LIST_DIR}/org.audacityteam.Audacity-QuickEdit.desktop.in org.audacityteam.Audacity-QuickEdit${MUSE_APP_INSTALL_SUFFIX}.desktop)
+install(FILES ${PROJECT_BINARY_DIR}/org.audacityteam.Audacity-QuickEdit${MUSE_APP_INSTALL_SUFFIX}.desktop DESTINATION share/applications)
+
+
 # Install appdata file (perform variable substitution first)
 if("${MUSE_APP_INSTALL_SUFFIX}" MATCHES "-")
     message(FATAL_ERROR

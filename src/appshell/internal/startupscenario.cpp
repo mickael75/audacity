@@ -111,6 +111,16 @@ void StartupScenario::setRemoveMediaFilesAfterImport(bool remove)
     m_removeMediaFilesAfterImport = remove;
 }
 
+bool StartupScenario::quickEditMode() const
+{
+    return m_quickEditMode;
+}
+
+void StartupScenario::setQuickEditMode(bool quickEdit)
+{
+    m_quickEditMode = quickEdit;
+}
+
 void StartupScenario::setStartupUrl(const QString& url)
 {
     if (m_startupCompleted && !url.isEmpty()) {
@@ -209,7 +219,7 @@ void StartupScenario::onStartupPageOpened(StartupModeType modeType)
         }
 
         dispatcher()->dispatch("project-import-startup-media",
-                               ActionData::make_arg2<QStringList, bool>(files, m_removeMediaFilesAfterImport));
+                               ActionData::make_arg3<QStringList, bool, bool>(files, m_removeMediaFilesAfterImport, m_quickEditMode));
         return;
     }
 

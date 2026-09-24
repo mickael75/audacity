@@ -29,6 +29,9 @@ struct AudacityCmdOptions : public muse::CmdOptions {
         std::optional<QString> startupUrl;
         muse::io::paths_t mediaFiles;
         bool removeMediaFilesAfterImport = false;
+        //! NOTE: like Adobe Audition's external-editor "%F" workflow: import the file for editing
+        //! and export changes back to the same path/format instead of prompting to save a project
+        bool quickEdit = false;
     } startup;
 
     struct Testflow {

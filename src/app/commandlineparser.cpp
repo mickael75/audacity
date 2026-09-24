@@ -68,6 +68,10 @@ void CommandLineParser::init()
     m_parser.addOption(QCommandLineOption("session-type", "Startup with given session type", "type"));
     m_parser.addOption(internalCommandLineOption("import-media-file", "Import media file on startup", "path"));
     m_parser.addOption(internalCommandLineOption("remove-media-after-import", "Remove imported media files after import"));
+    m_parser.addOption(QCommandLineOption("quick-edit",
+                                          "Edit the given media file directly: saving exports the changes back to its original path"
+                                          " and location, keeping the Audacity project data in a temporary directory (like an"
+                                          " external \"Edit In\" tool, e.g. launched with %f/%F)"));
     m_parser.addOption(internalCommandLineOption("project-display-name-override", "Display name override", "name"));
 
     m_parser.addOption(QCommandLineOption({ "u", "url" }, "Open the given URL on startup", "url"));
@@ -153,6 +157,10 @@ void CommandLineParser::parse(int argc, char** argv)
 
     if (m_parser.isSet("remove-media-after-import")) {
         m_options->startup.removeMediaFilesAfterImport = true;
+    }
+
+    if (m_parser.isSet("quick-edit")) {
+        m_options->startup.quickEdit = true;
     }
 
     if (m_parser.isSet("F")) {

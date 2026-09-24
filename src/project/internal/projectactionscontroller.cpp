@@ -1,7 +1,11 @@
 #include "projectactionscontroller.h"
 
+#include <QFile>
 #include <QFileDialog>
 
+#include <sndfile.h>
+
+#include <algorithm>
 #include <variant>
 
 #include "framework/global/async/async.h"
@@ -15,6 +19,8 @@
 #include "framework/interactive/iinteractive.h"
 
 #include "au3cloud/au3clouderrors.h"
+#include "importexport/export/types/exporttypes.h"
+#include "trackedit/dom/track.h"
 
 #include "audacityproject.h"
 #include "projecterrors.h"
@@ -37,6 +43,64 @@ static const muse::Uri CUSTOM_MAPPING("audacity://project/export/mapping");
 
 static const QString AUDACITY_URL_SCHEME("audacity");
 static const QString OPEN_PROJECT_URL_HOSTNAME("open-project");
+
+//! NOTE: export parameters (see mod-pcm / mod-flac option ids) reproducing the encoding of the given audio file,
+//! or an empty list when it can't be read or the format isn't handled
+static muse::ValList sourceEncodingParameters(const muse::io::path_t& path)
+{
+    //! NOTE: open through QFile so that non-ASCII paths also work on Windows
+    QFile file(path.toQString());
+    if (!file.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+
+    SF_INFO info {};
+    SNDFILE* sndFile = sf_open_fd(static_cast<int>(file.handle()), SFM_READ, &info, SF_FALSE);
+    if (!sndFile) {
+        return {};
+    }
+    sf_close(sndFile);
+
+    const int container = info.format & SF_FORMAT_TYPEMASK;
+    const int subtype = info.format & SF_FORMAT_SUBMASK;
+
+    auto param = [](int id, const muse::Val& value) {
+        muse::ValMap entry;
+        entry["id"] = muse::Val(id);
+        entry["value"] = value;
+        return muse::Val(entry);
+    };
+
+    switch (container) {
+    case SF_FORMAT_WAV:
+    case SF_FORMAT_WAVEX:
+    case SF_FORMAT_AIFF: {
+        switch (subtype) {
+        case SF_FORMAT_PCM_S8:
+        case SF_FORMAT_PCM_U8:
+        case SF_FORMAT_PCM_16:
+        case SF_FORMAT_PCM_24:
+        case SF_FORMAT_PCM_32:
+        case SF_FORMAT_FLOAT:
+        case SF_FORMAT_DOUBLE:
+            break;
+        default:
+            return {};
+        }
+
+        //! NOTE: mod-pcm: option 0 is the header type, option <header type> is its encoding
+        const int type = container == SF_FORMAT_AIFF ? SF_FORMAT_AIFF : SF_FORMAT_WAV;
+        return { param(0, muse::Val(type)), param(type, muse::Val(subtype)) };
+    }
+    case SF_FORMAT_FLAC: {
+        //! NOTE: mod-flac: option 0 is the bit depth, option 1 the compression level
+        const std::string bitDepth = subtype == SF_FORMAT_PCM_24 ? "24" : "16";
+        return { param(0, muse::Val(bitDepth)), param(1, muse::Val(std::string("5"))) };
+    }
+    default:
+        return {};
+    }
+}
 
 static const muse::actions::ActionCode OPEN_CUSTOM_FFMPEG_OPTIONS("open-custom-ffmpeg-options");
 static const muse::actions::ActionCode OPEN_METADATA_DIALOG("open-metadata-dialog");
@@ -472,6 +536,7 @@ void ProjectActionsController::importStartupMedia(const muse::actions::ActionDat
 {
     const QStringList files = !args.empty() ? args.arg<QStringList>(0) : QStringList();
     const bool removeAfterImport = args.count() >= 2 ? args.arg<bool>(1) : false;
+    const bool quickEdit = args.count() >= 3 ? args.arg<bool>(2) : false;
 
     muse::io::paths_t filePaths;
     filePaths.reserve(files.size());
@@ -479,7 +544,7 @@ void ProjectActionsController::importStartupMedia(const muse::actions::ActionDat
         filePaths.emplace_back(file);
     }
 
-    Ret ret = processMediaFiles(filePaths);
+    Ret ret = processMediaFiles(filePaths, quickEdit);
     if (removeAfterImport) {
         for (const auto& filePath : filePaths) {
             fileSystem()->remove(filePath);
@@ -491,7 +556,7 @@ void ProjectActionsController::importStartupMedia(const muse::actions::ActionDat
     }
 }
 
-muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& paths)
+muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& paths, bool quickEdit)
 {
     if (paths.empty()) {
         return make_ret(Ret::Code::Cancel);
@@ -508,11 +573,29 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
         actualPaths.emplace_back(actualPath);
     }
 
+    //! NOTE: quick edit works on one source file per project: when several files are given (e.g. %F),
+    //! open each extra file in its own quick edit window and keep the first one for this window
+    if (quickEdit && actualPaths.size() > 1) {
+        for (size_t i = 1; i < actualPaths.size(); ++i) {
+            QStringList args;
+            args << "--session-type" << "start-with-new"
+                 << "--import-media-file" << actualPaths.at(i).toQString()
+                 << "--quick-edit";
+            multiwindowsProvider()->openNewWindow(args);
+        }
+        actualPaths.resize(1);
+    }
+
+    const bool isQuickEdit = quickEdit;
+
     if (globalContext()->currentProject()) {
         QStringList args;
         args << "--session-type" << "start-with-new";
         for (const auto& actualPath : actualPaths) {
             args << "--import-media-file" << actualPath.toQString();
+        }
+        if (isQuickEdit) {
+            args << "--quick-edit";
         }
 
         multiwindowsProvider()->openNewWindow(args);
@@ -529,8 +612,38 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
         return ret;
     }
 
-    return project->import(actualPaths);
+    ret = project->import(actualPaths);
+    if (ret && isQuickEdit) {
+        startQuickEdit(project, actualPaths.front());
+    }
+
+    return ret;
 }
+
+void ProjectActionsController::startQuickEdit(const IAudacityProjectPtr& project, const muse::io::path_t& sourcePath)
+{
+    m_quickEditSourceFiles[project.get()] = QuickEditSource { sourcePath, true };
+
+    //! NOTE: any edit after opening / exporting makes the source file outdated again
+    IAudacityProject* rawProject = project.get();
+    project->needSave().notification.onNotify(this, [this, rawProject]() {
+        const auto it = m_quickEditSourceFiles.find(rawProject);
+        if (it != m_quickEditSourceFiles.end()) {
+            it->second.upToDate = false;
+        }
+    }, muse::async::Asyncable::Mode::SetReplace);
+}
+
+bool ProjectActionsController::isQuickEditProjectUpToDate(const IAudacityProjectPtr& project) const
+{
+    if (!project) {
+        return false;
+    }
+
+    const auto it = m_quickEditSourceFiles.find(project.get());
+    return it != m_quickEditSourceFiles.end() && it->second.upToDate;
+}
+
 
 bool ProjectActionsController::isUrlSupported(const QUrl& url) const
 {
@@ -580,7 +693,8 @@ bool ProjectActionsController::closeOpenedProject(const bool quitApp)
 
     bool result = true;
 
-    if (project->hasUnsavedChanges()) {
+    //! NOTE: a quick edit project whose changes were already exported back to the source has nothing to save
+    if (project->hasUnsavedChanges() && !isQuickEditProjectUpToDate(project)) {
         IInteractive::Button btn = askAboutSavingProject(project);
 
         if (btn == IInteractive::Button::Cancel) {
@@ -601,6 +715,7 @@ bool ProjectActionsController::closeOpenedProject(const bool quitApp)
 
         project->close();
 
+        m_quickEditSourceFiles.erase(project.get());
         globalContext()->setCurrentProject(nullptr);
 
         if (quitApp) {
@@ -750,6 +865,9 @@ bool ProjectActionsController::saveProjectLocally(const muse::io::path_t& filePa
         return false;
     }
 
+    //! NOTE: the user explicitly chose a project file location, so this is no longer a "quick edit" session
+    m_quickEditSourceFiles.erase(project.get());
+
     recentFilesController()->prependRecentFile(makeRecentFile(project));
     return true;
 }
@@ -898,6 +1016,100 @@ Ret ProjectActionsController::canSaveProject() const
     return project->canSave();
 }
 
+bool ProjectActionsController::isQuickEditProject(const IAudacityProjectPtr& project) const
+{
+    return project && m_quickEditSourceFiles.find(project.get()) != m_quickEditSourceFiles.end();
+}
+
+std::string ProjectActionsController::formatNameForExtension(const std::string& extension) const
+{
+    for (const std::string& format : exporter()->formatsList()) {
+        const auto extensions = exporter()->formatExtensions(format);
+        if (std::find(extensions.cbegin(), extensions.cend(), extension) != extensions.cend()) {
+            return format;
+        }
+    }
+
+    return std::string();
+}
+
+bool ProjectActionsController::exportQuickEditToSource(const IAudacityProjectPtr& project)
+{
+    const auto it = m_quickEditSourceFiles.find(project.get());
+    if (it == m_quickEditSourceFiles.end()) {
+        return false;
+    }
+
+    const muse::io::path_t sourcePath = it->second.path;
+    const std::string extension = io::suffix(sourcePath);
+    const std::string format = formatNameForExtension(extension);
+
+    if (format.empty()) {
+        interactive()->error(muse::trc("project", "Export error"),
+                             muse::mtrc("project", "Could not determine an export format for \"%1\".")
+                             .arg(sourcePath.toString()).toStdString());
+        return false;
+    }
+
+    //! NOTE: don't rely on the user's last export settings (selection only, mono, custom rate...):
+    //! the source file must be rewritten with the whole project and the same channel layout / rate
+    bool stereo = false;
+    uint64_t rate = 0;
+    if (const auto trackeditProject = project->trackeditProject()) {
+        for (const trackedit::Track& track : trackeditProject->trackList()) {
+            if (track.type == trackedit::TrackType::Label) {
+                continue;
+            }
+            stereo = stereo || track.type == trackedit::TrackType::Stereo;
+            rate = std::max(rate, track.rate);
+        }
+    }
+
+    importexport::IExporter::Options options;
+    options[importexport::IExporter::OptionKey::Format] = muse::Val(format);
+    options[importexport::IExporter::OptionKey::ProcessType] = muse::Val(importexport::ExportProcessType::FULL_PROJECT_AUDIO);
+    options[importexport::IExporter::OptionKey::ExportChannelsType]
+        = muse::Val(static_cast<int>(stereo ? importexport::ExportChannelsPref::ExportChannels::STEREO
+                                     : importexport::ExportChannelsPref::ExportChannels::MONO));
+    options[importexport::IExporter::OptionKey::ExportChannels] = muse::Val(stereo ? 2 : 1);
+    if (rate > 0) {
+        options[importexport::IExporter::OptionKey::ExportSampleRate] = muse::Val(static_cast<int>(rate));
+    }
+
+    //! NOTE: keep the source bit depth / encoding when it can be read (WAV, AIFF, FLAC);
+    //! other formats (MP3, OGG...) use the user's export preferences
+    const muse::ValList encodingParameters = sourceEncodingParameters(sourcePath);
+    if (!encodingParameters.empty()) {
+        options[importexport::IExporter::OptionKey::Parameters] = muse::Val(encodingParameters);
+    }
+
+    //! NOTE: export next to the source first, then replace it, so a failed export never corrupts the original
+    const muse::io::path_t tempPath = io::dirpath(sourcePath) + "/." + io::filename(sourcePath) + ".quickedit." + extension;
+
+    Ret ret = exporter()->exportData(tempPath, options, nullptr, project);
+    if (ret) {
+        ret = fileSystem()->move(tempPath, sourcePath, true);
+    }
+
+    if (!ret) {
+        if (fileSystem()->exists(tempPath)) {
+            fileSystem()->remove(tempPath);
+        }
+        interactive()->error(muse::trc("project", "Export error"), ret.text());
+        return false;
+    }
+
+    it->second.upToDate = true;
+
+    const bool dismissable = true;
+    toastService()->show(muse::trc("project", "Saved"),
+                         muse::mtrc("project", "Changes exported back to \"%1\"").arg(sourcePath.toString()).toStdString(),
+                         muse::ui::IconCode::Code::TICK,
+                         dismissable, {});
+
+    return true;
+}
+
 bool ProjectActionsController::saveProject(SaveMode saveMode, SaveLocationType saveLocationType, bool force)
 {
     if (m_isProjectSaving) {
@@ -910,6 +1122,10 @@ bool ProjectActionsController::saveProject(SaveMode saveMode, SaveLocationType s
     };
 
     IAudacityProjectPtr project = currentProject();
+
+    if (saveMode == SaveMode::Save && isQuickEditProject(project)) {
+        return exportQuickEditToSource(project);
+    }
 
     if (saveMode == SaveMode::Save && !project->isNewlyCreated() && saveLocationType == SaveLocationType::Undefined) {
         if (project->isCloudProject()) {

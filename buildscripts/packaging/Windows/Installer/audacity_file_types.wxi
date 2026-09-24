@@ -4,6 +4,9 @@
     <!-- Supported audio formats -->
     <?define AudacityMediaExts=wav;wavex;aiff;aif;aifc;au;caf;w64;rf64;voc;paf;sd2;iff;svx;raw;mp3;mp2;mpa;ogg;flac;flc;opus;wv;aac;ac3;m4a;mp4;m4r;3gp;3g2;wma;asf;wmv;mkv;mov;avi;flv;ts;ape;tta;amr;dts;ra;rm;mpc;shn?>
 
+    <!-- Audio formats that can be written back in place by quick edit (--quick-edit) -->
+    <?define AudacityQuickEditExts=wav;aiff;aif;flac;mp3;ogg;opus?>
+
     <!-- Supported label formats -->
     <?define AudacityLabelExts=srt;vtt?>
 

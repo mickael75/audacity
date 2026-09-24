@@ -49,6 +49,8 @@ public:
     virtual void setStartupMediaFiles(const muse::io::paths_t& files) = 0;
     virtual bool removeMediaFilesAfterImport() const = 0;
     virtual void setRemoveMediaFilesAfterImport(bool remove) = 0;
+    virtual bool quickEditMode() const = 0;
+    virtual void setQuickEditMode(bool quickEdit) = 0;
     virtual void setStartupUrl(const QString& url) = 0;
 
     virtual muse::async::Promise<muse::Ret> runOnSplashScreen() = 0;

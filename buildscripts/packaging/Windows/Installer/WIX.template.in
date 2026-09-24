@@ -23,6 +23,9 @@
 <!-- Primary (project) and the media "open with" helper. -->
 <?define Aup4ProgId="Audacity.aup4.$(var.ProgIdSuffix)"?>
 <?define MediaProgId="Audacity.Media.$(var.ProgIdSuffix)"?>
+<!-- "Edit In" helper: edits the audio file and saves the changes back to it (see --quick-edit) -->
+<?define QuickEditProgId="Audacity.QuickEdit.$(var.ProgIdSuffix)"?>
+<?define QuickEditCommand="&quot;$(var.ExePath)&quot; --quick-edit &quot;%1&quot;"?>
 
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi" RequiredVersion="3.6.3303.0">
 
@@ -158,6 +161,24 @@
 
             <?foreach EXT in $(var.AudacitySecondaryExts)?>
             <RegistryValue Root="$(var.RegistryRoot)" Key="SOFTWARE\Classes\.$(var.EXT)\OpenWithProgids" Name="$(var.MediaProgId)" Value="" Type="string" />
+            <?endforeach?>
+
+            <!-- Quick edit: "Open with" entry and "Edit with ..." context menu verb for audio files -->
+            <RegistryKey Root="$(var.RegistryRoot)" Key="SOFTWARE\Classes\$(var.QuickEditProgId)" ForceDeleteOnUninstall="yes">
+                <RegistryValue Value="Audacity audio file (Quick Edit)" Type="string" />
+                <RegistryValue Name="FriendlyTypeName" Value="$(var.ProdName) (Quick Edit)" Type="string" />
+                <RegistryValue Key="DefaultIcon" Value="$(var.ExeIcon)" Type="string" />
+                <RegistryValue Key="shell\open" Name="FriendlyAppName" Value="$(var.ProdName) (Quick Edit)" Type="string" />
+                <RegistryValue Key="shell\open\command" Value="$(var.QuickEditCommand)" Type="string" />
+            </RegistryKey>
+
+            <?foreach EXT in $(var.AudacityQuickEditExts)?>
+            <RegistryValue Root="$(var.RegistryRoot)" Key="SOFTWARE\Classes\.$(var.EXT)\OpenWithProgids" Name="$(var.QuickEditProgId)" Value="" Type="string" />
+            <RegistryKey Root="$(var.RegistryRoot)" Key="SOFTWARE\Classes\SystemFileAssociations\.$(var.EXT)\shell\$(var.QuickEditProgId)" ForceDeleteOnUninstall="yes">
+                <RegistryValue Name="MUIVerb" Value="Edit with $(var.ShortProdName)" Type="string" />
+                <RegistryValue Name="Icon" Value="$(var.ExeIcon)" Type="string" />
+                <RegistryValue Key="command" Value="$(var.QuickEditCommand)" Type="string" />
+            </RegistryKey>
             <?endforeach?>
         </Component>
 

@@ -143,7 +143,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../au3wrap/au3wrapDefs.cmake)
 
 set(MODULE_INCLUDE ${AU3_INCLUDE})
 set(MODULE_DEF ${AU3_DEF})
-set(MODULE_LINK au3wrap Qt::Widgets)
+set(MODULE_LINK au3wrap Qt::Widgets SndFile::sndfile)
 if (QT_ADD_CONCURRENT)
     list(APPEND MODULE_LINK Qt::Concurrent)
 endif()
