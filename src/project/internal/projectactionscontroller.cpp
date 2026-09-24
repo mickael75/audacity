@@ -1287,7 +1287,21 @@ bool ProjectActionsController::saveProject(SaveMode saveMode, SaveLocationType s
     IAudacityProjectPtr project = currentProject();
 
     if (saveMode == SaveMode::Save && isQuickEditProject(project)) {
-        return exportQuickEditToSource(project);
+        const bool exported = exportQuickEditToSource(project);
+
+        //! NOTE: the application which launched the quick edit takes the file back once Audacity exits,
+        //! so saving also closes Audacity (not when the save was asked by closing, which closes anyway)
+        if (exported && !m_isProjectClosing) {
+            muse::async::Async::call(this, [this]() {
+                if (application()->contexts().size() > 1) {
+                    closeOpenedProject(false);
+                } else {
+                    dispatcher()->dispatch("quit", actions::ActionData::make_arg1<bool>(false));
+                }
+            });
+        }
+
+        return exported;
     }
 
     if (saveMode == SaveMode::Save && !project->isNewlyCreated() && saveLocationType == SaveLocationType::Undefined) {
