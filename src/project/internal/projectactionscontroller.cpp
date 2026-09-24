@@ -43,6 +43,9 @@ static const muse::Uri METADATA_DIALOG_URI("audacity://project/export/metadata")
 static const muse::Uri EXPORT_LABELS_URI("audacity://project/export/labels");
 static const muse::Uri CUSTOM_MAPPING("audacity://project/export/mapping");
 
+static constexpr int BTN_QUICK_EDIT_SAVE_SELECTION = int(muse::IInteractive::Button::CustomButton) + 1;
+static constexpr int BTN_QUICK_EDIT_SAVE_WHOLE_FILE = int(muse::IInteractive::Button::CustomButton) + 2;
+
 static const QString AUDACITY_URL_SCHEME("audacity");
 static const QString OPEN_PROJECT_URL_HOSTNAME("open-project");
 
@@ -1157,8 +1160,31 @@ bool ProjectActionsController::exportQuickEditToSource(const IAudacityProjectPtr
         return false;
     }
 
-    //! NOTE: don't rely on the user's last export settings (selection only, mono, custom rate...):
-    //! the source file must be rewritten with the whole project and the same channel layout / rate
+    //! NOTE: with a time selection, ask whether only the selection or the whole project replaces the source file
+    importexport::ExportProcessType processType = importexport::ExportProcessType::FULL_PROJECT_AUDIO;
+    if (!selectionController()->timeSelectionIsEmpty()) {
+        const IInteractive::ButtonDatas buttons = {
+            IInteractive::ButtonData(IInteractive::Button::Cancel, muse::trc("project", "Cancel")),
+            IInteractive::ButtonData(BTN_QUICK_EDIT_SAVE_WHOLE_FILE, muse::trc("project", "Whole file")),
+            IInteractive::ButtonData(BTN_QUICK_EDIT_SAVE_SELECTION, muse::trc("project", "Selection only"), true /*accent*/),
+        };
+
+        const IInteractive::Result result = interactive()->questionSync(
+            muse::trc("project", "Save selection?"),
+            muse::mtrc("project", "Part of the audio is selected. Replace \"%1\" with the selection only, or with the whole file?")
+            .arg(io::filename(sourcePath).toString()).toStdString(),
+            buttons,
+            BTN_QUICK_EDIT_SAVE_SELECTION);
+
+        if (result.button() == BTN_QUICK_EDIT_SAVE_SELECTION) {
+            processType = importexport::ExportProcessType::SELECTED_AUDIO;
+        } else if (result.button() != BTN_QUICK_EDIT_SAVE_WHOLE_FILE) {
+            return false;
+        }
+    }
+
+    //! NOTE: don't rely on the user's last export settings (mono, custom rate...):
+    //! the source file must be rewritten with the same channel layout / rate
     bool stereo = false;
     uint64_t rate = 0;
     if (const auto trackeditProject = project->trackeditProject()) {
@@ -1173,7 +1199,7 @@ bool ProjectActionsController::exportQuickEditToSource(const IAudacityProjectPtr
 
     importexport::IExporter::Options options;
     options[importexport::IExporter::OptionKey::Format] = muse::Val(format);
-    options[importexport::IExporter::OptionKey::ProcessType] = muse::Val(importexport::ExportProcessType::FULL_PROJECT_AUDIO);
+    options[importexport::IExporter::OptionKey::ProcessType] = muse::Val(processType);
     options[importexport::IExporter::OptionKey::ExportChannelsType]
         = muse::Val(static_cast<int>(stereo ? importexport::ExportChannelsPref::ExportChannels::STEREO
                                      : importexport::ExportChannelsPref::ExportChannels::MONO));

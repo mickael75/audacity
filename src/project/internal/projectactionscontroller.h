@@ -21,6 +21,7 @@
 #include "iopensaveprojectscenario.h"
 #include "framework/toast/itoastservice.h"
 #include "trackedit/iprojecthistory.h"
+#include "trackedit/iselectioncontroller.h"
 #include "record/irecordcontroller.h"
 #include "importexport/export/internal/exportconfiguration.h"
 #include "importexport/export/iexporter.h"
@@ -56,6 +57,7 @@ class ProjectActionsController : public IProjectFilesController, public muse::ac
     muse::ContextInject<muse::IInteractive> interactive { this };
     muse::ContextInject<IOpenSaveProjectScenario> openSaveProjectScenario { this };
     muse::ContextInject<trackedit::IProjectHistory> projectHistory { this };
+    muse::ContextInject<trackedit::ISelectionController> selectionController { this };
     muse::ContextInject<record::IRecordController> recordController { this };
     muse::ContextInject<importexport::IImporter> importer { this };
     muse::ContextInject<importexport::IExporter> exporter { this };
