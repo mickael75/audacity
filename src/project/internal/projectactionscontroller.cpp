@@ -1,7 +1,11 @@
 #include "projectactionscontroller.h"
 
 #include <QFile>
+#include <QDateTime>
+#include <QDir>
 #include <QFileDialog>
+#include <QFileInfo>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 
 #include <sndfile.h>
@@ -24,6 +28,9 @@
 #include "au3cloud/au3clouderrors.h"
 #include "importexport/export/types/exporttypes.h"
 #include "trackedit/dom/track.h"
+#include "au3wrap/internal/wxtypes_convert.h"
+#include "au3-project/Project.h"
+#include "au3-project-file-io/ProjectFileIO.h"
 
 #include "audacityproject.h"
 #include "projecterrors.h"
@@ -158,6 +165,25 @@ static bool overwriteFileContents(const QString& fromPath, const QString& toPath
     }
 
     return to.flush();
+}
+
+//! NOTE: quick edit keeps a backup (original file + project) of each save, removed after this many days
+static constexpr int QUICK_EDIT_BACKUP_DAYS = 5;
+
+static QString quickEditBackupRoot()
+{
+    return QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation)).filePath("Audacity Quick Edit Backups");
+}
+
+static void purgeQuickEditBackups()
+{
+    const QDateTime limit = QDateTime::currentDateTime().addDays(-QUICK_EDIT_BACKUP_DAYS);
+    const QFileInfoList backups = QDir(quickEditBackupRoot()).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QFileInfo& backup : backups) {
+        if (backup.lastModified() < limit) {
+            QDir(backup.absoluteFilePath()).removeRecursively();
+        }
+    }
 }
 
 //! NOTE: mod-mp2: option 0 is the MPEG version (1: MPEG-1), options 1 / 2 the MPEG-1 / MPEG-2 bitrate
@@ -1250,6 +1276,27 @@ bool ProjectActionsController::exportQuickEditToSource(const IAudacityProjectPtr
     if (!ret) {
         interactive()->error(muse::trc("project", "Export error"), ret.text());
         return false;
+    }
+
+    //! NOTE: back up the original file (before it is overwritten) and the project, in a dated directory
+    purgeQuickEditBackups();
+
+    const QString sourceFileName = io::filename(sourcePath).toQString();
+    const QString sourceBaseName = QFileInfo(sourceFileName).completeBaseName();
+    const QDir backupDir(QDir(quickEditBackupRoot()).filePath(
+                             QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss-zzz") + "_" + sourceBaseName));
+
+    if (!QDir().mkpath(backupDir.path()) || !QFile::copy(sourcePath.toQString(), backupDir.filePath(sourceFileName))) {
+        interactive()->error(muse::trc("project", "Export error"),
+                             muse::mtrc("project", "Could not back up \"%1\" into \"%2\", the file was not saved.")
+                             .arg(sourcePath.toString()).arg(muse::String::fromQString(backupDir.path())).toStdString());
+        return false;
+    }
+
+    auto* au3Project = reinterpret_cast<AudacityProject*>(project->au3ProjectPtr());
+    const QString projectBackupPath = backupDir.filePath(sourceBaseName + ".aup3");
+    if (!au3Project || !ProjectFileIO::Get(*au3Project).SaveCopy(au::au3::wxFromString(muse::String::fromQString(projectBackupPath)))) {
+        LOGW() << "could not back up the quick edit project to " << projectBackupPath;
     }
 
     if (!overwriteFileContents(tempPath.toQString(), sourcePath.toQString())) {
