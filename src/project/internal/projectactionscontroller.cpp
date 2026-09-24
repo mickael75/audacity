@@ -2,6 +2,7 @@
 
 #include <QFile>
 #include <QFileDialog>
+#include <QTemporaryDir>
 
 #include <sndfile.h>
 
@@ -137,6 +138,26 @@ static std::optional<MpegAudioLayer2Info> mpegAudioLayer2Info(const muse::io::pa
     }
 
     return std::nullopt;
+}
+
+//! NOTE: rewrite the file in place (same name, same file on disk) instead of replacing it with another file,
+//! so that the application which launched the quick edit finds its own file, only with new contents
+static bool overwriteFileContents(const QString& fromPath, const QString& toPath)
+{
+    QFile from(fromPath);
+    QFile to(toPath);
+    if (!from.open(QIODevice::ReadOnly) || !to.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        return false;
+    }
+
+    while (!from.atEnd()) {
+        const QByteArray chunk = from.read(1024 * 1024);
+        if (chunk.isEmpty() || to.write(chunk) != chunk.size()) {
+            return false;
+        }
+    }
+
+    return to.flush();
 }
 
 //! NOTE: mod-mp2: option 0 is the MPEG version (1: MPEG-1), options 1 / 2 the MPEG-1 / MPEG-2 bitrate
@@ -1215,19 +1236,29 @@ bool ProjectActionsController::exportQuickEditToSource(const IAudacityProjectPtr
         options[importexport::IExporter::OptionKey::Parameters] = muse::Val(encodingParameters);
     }
 
-    //! NOTE: export next to the source first, then replace it, so a failed export never corrupts the original
-    const muse::io::path_t tempPath = io::dirpath(sourcePath) + "/." + io::filename(sourcePath) + ".quickedit." + extension;
-
-    Ret ret = exporter()->exportData(tempPath, options, nullptr, project);
-    if (ret) {
-        ret = fileSystem()->move(tempPath, sourcePath, true);
+    //! NOTE: export to a temporary directory first (with the same file name), so that a failed export never
+    //! corrupts the original and no extra file ever appears next to it; then rewrite the original in place
+    QTemporaryDir tempDir;
+    if (!tempDir.isValid()) {
+        interactive()->error(muse::trc("project", "Export error"), tempDir.errorString().toStdString());
+        return false;
     }
 
+    const muse::io::path_t tempPath = muse::io::path_t(tempDir.filePath(io::filename(sourcePath).toQString()));
+
+    const Ret ret = exporter()->exportData(tempPath, options, nullptr, project);
     if (!ret) {
-        if (fileSystem()->exists(tempPath)) {
-            fileSystem()->remove(tempPath);
-        }
         interactive()->error(muse::trc("project", "Export error"), ret.text());
+        return false;
+    }
+
+    if (!overwriteFileContents(tempPath.toQString(), sourcePath.toQString())) {
+        //! NOTE: keep the exported file, the original may be partially written
+        tempDir.setAutoRemove(false);
+        interactive()->error(muse::trc("project", "Export error"),
+                             muse::mtrc("project", "Could not write \"%1\". Check that it isn't read-only or locked by another "
+                                                   "application. The exported audio was kept in \"%2\".")
+                             .arg(sourcePath.toString()).arg(tempPath.toString()).toStdString());
         return false;
     }
 

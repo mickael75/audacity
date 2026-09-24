@@ -81,6 +81,7 @@ private:
 
     bool hasExplicitStartupTarget() const;
     StartupModeType resolveStartupModeType() const;
+    bool isQuickEditStartup() const;
     muse::Uri startupPageUri(StartupModeType modeType) const;
 
     void openProject(const au::project::ProjectFile& file);

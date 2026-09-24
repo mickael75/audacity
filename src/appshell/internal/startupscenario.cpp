@@ -133,7 +133,8 @@ void StartupScenario::setStartupUrl(const QString& url)
 muse::async::Promise<muse::Ret> StartupScenario::runOnSplashScreen()
 {
     return muse::async::make_promise<muse::Ret>([this](auto resolve, auto) {
-        if (multiwindowsProvider()->isFirstWindow()) {
+        //! NOTE: quick edit is launched by another application to edit one file: start as fast as possible
+        if (multiwindowsProvider()->isFirstWindow() && !isQuickEditStartup()) {
             tryCheckForUpdate();
             startUpdateCheckTimer();
         }
@@ -203,14 +204,17 @@ void StartupScenario::onStartupPageOpened(StartupModeType modeType)
 {
     TRACEFUNC;
 
-    if (appUpdateScenario() && appUpdateScenario()->checkInProgress()) {
-        appUpdateScenario()->checkInProgressChanged().onNotify(this, [this, modeType]() {
-            appUpdateScenario()->checkInProgressChanged().disconnect(this);
-            showStartupDialogsIfNeed(modeType);
-        }, muse::async::Asyncable::Mode::SetReplace);
-    }
+    //! NOTE: no update / welcome popups in quick edit
+    if (!isQuickEditStartup()) {
+        if (appUpdateScenario() && appUpdateScenario()->checkInProgress()) {
+            appUpdateScenario()->checkInProgressChanged().onNotify(this, [this, modeType]() {
+                appUpdateScenario()->checkInProgressChanged().disconnect(this);
+                showStartupDialogsIfNeed(modeType);
+            }, muse::async::Asyncable::Mode::SetReplace);
+        }
 
-    showStartupDialogsIfNeed(modeType);
+        showStartupDialogsIfNeed(modeType);
+    }
 
     if (!m_startupMediaFiles.empty()) {
         QStringList files;
@@ -309,8 +313,18 @@ void StartupScenario::showStartupDialogsIfNeed(StartupModeType)
     });
 }
 
+bool StartupScenario::isQuickEditStartup() const
+{
+    return m_quickEditMode && !m_startupMediaFiles.empty();
+}
+
 muse::Uri StartupScenario::startupPageUri(StartupModeType modeType) const
 {
+    //! NOTE: quick edit goes straight to the project page, the home page (recent / cloud projects) is never shown
+    if (isQuickEditStartup()) {
+        return PROJECT_URI;
+    }
+
     switch (modeType) {
     case StartupModeType::StartEmpty:
     case StartupModeType::StartWithNewProject:
