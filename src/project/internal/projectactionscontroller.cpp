@@ -65,14 +65,15 @@ static muse::Val exportParameter(int id, const muse::Val& value)
     return muse::Val(entry);
 }
 
-struct MpegAudioLayer2Info {
+struct MpegAudioInfo {
+    int layer = 2; // 2: MP2, 3: MP3
     bool mpeg1 = true;
     int bitrateKbps = 0;
 };
 
-//! NOTE: some broadcast systems (e.g. RCS Zetta) store MPEG-1/2 Layer II audio with a video extension (.mpg):
-//! detect it from its frame headers (two consecutive valid frames) so that it can be written back as MP2
-static std::optional<MpegAudioLayer2Info> mpegAudioLayer2Info(const muse::io::path_t& path)
+//! NOTE: some broadcast systems (e.g. RCS Zetta) store MPEG audio with another extension (.mpg) or none at all:
+//! detect MPEG-1/2 Layer II / III audio from its frame headers (two consecutive valid frames)
+static std::optional<MpegAudioInfo> mpegAudioInfo(const muse::io::path_t& path)
 {
     QFile file(path.toQString());
     if (!file.open(QIODevice::ReadOnly)) {
@@ -103,43 +104,47 @@ static std::optional<MpegAudioLayer2Info> mpegAudioLayer2Info(const muse::io::pa
         return std::nullopt;
     }
 
-    static const int MPEG1_BITRATES[16] = { 0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0 };
+    static const int MPEG1_L2_BITRATES[16] = { 0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0 };
+    static const int MPEG1_L3_BITRATES[16] = { 0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0 };
     static const int MPEG2_BITRATES[16] = { 0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0 };
     static const int MPEG1_RATES[4] = { 44100, 48000, 32000, 0 };
     static const int MPEG2_RATES[4] = { 22050, 24000, 16000, 0 };
 
-    //! returns the frame length, or 0 when there is no Layer II frame header at pos
-    auto frameAt = [bytes, size](int pos, MpegAudioLayer2Info& info) -> int {
+    //! returns the frame length, or 0 when there is no Layer II / III frame header at pos
+    auto frameAt = [bytes, size](int pos, MpegAudioInfo& info) -> int {
         if (pos < 0 || pos + 4 > size || bytes[pos] != 0xFF || (bytes[pos + 1] & 0xE0) != 0xE0) {
             return 0;
         }
 
         const int version = (bytes[pos + 1] >> 3) & 0x3; // 3: MPEG-1, 2: MPEG-2 (MPEG-2.5 isn't supported by the encoder)
-        const int layer = (bytes[pos + 1] >> 1) & 0x3;   // 2: Layer II
-        if (layer != 2 || (version != 3 && version != 2)) {
+        const int layerBits = (bytes[pos + 1] >> 1) & 0x3; // 2: Layer II, 1: Layer III
+        if ((layerBits != 2 && layerBits != 1) || (version != 3 && version != 2)) {
             return 0;
         }
 
+        const int layer = layerBits == 2 ? 2 : 3;
         const bool mpeg1 = version == 3;
-        const int kbps = (mpeg1 ? MPEG1_BITRATES : MPEG2_BITRATES)[bytes[pos + 2] >> 4];
+        const int kbps = (mpeg1 ? (layer == 2 ? MPEG1_L2_BITRATES : MPEG1_L3_BITRATES) : MPEG2_BITRATES)[bytes[pos + 2] >> 4];
         const int rate = (mpeg1 ? MPEG1_RATES : MPEG2_RATES)[(bytes[pos + 2] >> 2) & 0x3];
         if (kbps == 0 || rate == 0) {
             return 0;
         }
 
-        info = { mpeg1, kbps };
-        return 144000 * kbps / rate + ((bytes[pos + 2] >> 1) & 0x1);
+        info = { layer, mpeg1, kbps };
+        //! NOTE: MPEG-2 Layer III frames hold half as many samples
+        const int samplesFactor = (layer == 3 && !mpeg1) ? 72000 : 144000;
+        return samplesFactor * kbps / rate + ((bytes[pos + 2] >> 1) & 0x1);
     };
 
     for (int pos = 0; pos + 4 <= size; ++pos) {
-        MpegAudioLayer2Info info;
+        MpegAudioInfo info;
         const int length = frameAt(pos, info);
         if (length == 0) {
             continue;
         }
 
-        MpegAudioLayer2Info next;
-        if (frameAt(pos + length, next) > 0 && next.mpeg1 == info.mpeg1) {
+        MpegAudioInfo next;
+        if (frameAt(pos + length, next) > 0 && next.mpeg1 == info.mpeg1 && next.layer == info.layer) {
             return info;
         }
     }
@@ -194,7 +199,7 @@ static void purgeQuickEditBackups()
 }
 
 //! NOTE: mod-mp2: option 0 is the MPEG version (1: MPEG-1), options 1 / 2 the MPEG-1 / MPEG-2 bitrate
-static muse::ValList mp2EncodingParameters(const MpegAudioLayer2Info& info)
+static muse::ValList mp2EncodingParameters(const MpegAudioInfo& info)
 {
     return { exportParameter(0, muse::Val(info.mpeg1 ? 1 : 0)),
              exportParameter(info.mpeg1 ? 1 : 2, muse::Val(info.bitrateKbps)) };
@@ -782,13 +787,62 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
 
 bool ProjectActionsController::canQuickEdit(const muse::io::path_t& sourcePath) const
 {
-    const std::string extension = io::suffix(sourcePath);
-    if (!formatNameForExtension(extension).empty()) {
-        return true;
+    return !quickEditFormat(sourcePath).empty();
+}
+
+std::string ProjectActionsController::formatNameForContents(const muse::io::path_t& path) const
+{
+    QFile file(path.toQString());
+    if (file.open(QIODevice::ReadOnly)) {
+        SF_INFO info {};
+        SNDFILE* sndFile = sf_open_fd(static_cast<int>(file.handle()), SFM_READ, &info, SF_FALSE);
+        if (sndFile) {
+            sf_close(sndFile);
+            switch (info.format & SF_FORMAT_TYPEMASK) {
+            case SF_FORMAT_WAV:
+            case SF_FORMAT_WAVEX:
+            case SF_FORMAT_RF64:
+            case SF_FORMAT_W64:
+                return formatNameForExtension("wav");
+            case SF_FORMAT_AIFF:
+                return formatNameForExtension("aiff");
+            case SF_FORMAT_FLAC:
+                return formatNameForExtension("flac");
+            case SF_FORMAT_OGG:
+                return formatNameForExtension((info.format & SF_FORMAT_SUBMASK) == SF_FORMAT_OPUS ? "opus" : "ogg");
+            default:
+                break;
+            }
+        }
     }
 
-    return isMpegAudioExtension(extension)
-           && (QFileInfo(sourcePath.toQString()).size() == 0 || mpegAudioLayer2Info(sourcePath).has_value());
+    if (const std::optional<MpegAudioInfo> mpeg = mpegAudioInfo(path)) {
+        return formatNameForExtension(mpeg->layer == 2 ? "mp2" : "mp3");
+    }
+
+    return std::string();
+}
+
+std::string ProjectActionsController::quickEditFormat(const muse::io::path_t& sourcePath) const
+{
+    //! NOTE: RCS Zetta passes files without an audio extension (e.g. "name.-12283"): rely on the contents first
+    std::string format = formatNameForContents(sourcePath);
+    if (!format.empty()) {
+        return format;
+    }
+
+    const std::string extension = io::suffix(sourcePath);
+    format = formatNameForExtension(extension);
+    if (!format.empty()) {
+        return format;
+    }
+
+    //! NOTE: a new (empty) file to record into: MP2 for MPEG extensions, WAV otherwise
+    if (QFileInfo(sourcePath.toQString()).size() == 0) {
+        return formatNameForExtension(isMpegAudioExtension(extension) ? "mp2" : "wav");
+    }
+
+    return std::string();
 }
 
 void ProjectActionsController::startQuickEdit(const IAudacityProjectPtr& project, const muse::io::path_t& sourcePath)
@@ -1216,20 +1270,15 @@ bool ProjectActionsController::exportQuickEditToSource(const IAudacityProjectPtr
     }
 
     const muse::io::path_t sourcePath = it->second.path;
-    const std::string extension = io::suffix(sourcePath);
-    std::string format = formatNameForExtension(extension);
-
-    //! NOTE: MPEG Layer II audio may use another extension than .mp2 (e.g. .mpg in RCS Zetta)
-    const std::string mp2Format = formatNameForExtension("mp2");
     const bool isNewFile = QFileInfo(sourcePath.toQString()).size() == 0;
-    std::optional<MpegAudioLayer2Info> mpegAudio;
-    if (format.empty() || format == mp2Format) {
-        mpegAudio = mpegAudioLayer2Info(sourcePath);
-        if (mpegAudio) {
-            format = mp2Format;
-        } else if (format.empty() && isNewFile && isMpegAudioExtension(extension)) {
-            //! NOTE: a new (empty) .mpg file has no frames to look at: write MP2 with the export preferences
-            format = mp2Format;
+    const std::string format = quickEditFormat(sourcePath);
+
+    //! NOTE: MP2 keeps the source MPEG version and bitrate
+    std::optional<MpegAudioInfo> mpegAudio;
+    if (!format.empty() && format == formatNameForExtension("mp2")) {
+        mpegAudio = mpegAudioInfo(sourcePath);
+        if (mpegAudio && mpegAudio->layer != 2) {
+            mpegAudio.reset();
         }
     }
 
