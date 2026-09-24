@@ -175,6 +175,13 @@ static QString quickEditBackupRoot()
     return QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation)).filePath("Audacity Quick Edit Backups");
 }
 
+static bool isMpegAudioExtension(std::string extension)
+{
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return extension == "mpg" || extension == "mpeg" || extension == "mpa" || extension == "m2a";
+}
+
 static void purgeQuickEditBackups()
 {
     const QDateTime limit = QDateTime::currentDateTime().addDays(-QUICK_EDIT_BACKUP_DAYS);
@@ -708,6 +715,10 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
     actualPaths.reserve(paths.size());
     for (const auto& givenPath : paths) {
         io::path_t actualPath = fileSystem()->absoluteFilePath(givenPath);
+        if (actualPath.empty() && quickEdit) {
+            //! NOTE: the file to quick edit may not exist yet (see below)
+            actualPath = io::path_t(QFileInfo(givenPath.toQString()).absoluteFilePath());
+        }
         if (actualPath.empty()) {
             return make_ret(Ret::Code::UnknownError);
         }
@@ -754,12 +765,30 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
         return ret;
     }
 
-    ret = project->import(actualPaths);
-    if (ret && isQuickEdit) {
+    //! NOTE: the calling application may give a file to create (missing or empty, e.g. to record into it):
+    //! quick edit then starts with an empty project, which is saved to that file
+    const bool isNewQuickEditFile = isQuickEdit && QFileInfo(actualPaths.front().toQString()).size() == 0;
+    if (!isNewQuickEditFile) {
+        ret = project->import(actualPaths);
+    }
+
+    //! NOTE: only files which can be written back are quick edited, others open as a regular project
+    if (ret && isQuickEdit && canQuickEdit(actualPaths.front())) {
         startQuickEdit(project, actualPaths.front());
     }
 
     return ret;
+}
+
+bool ProjectActionsController::canQuickEdit(const muse::io::path_t& sourcePath) const
+{
+    const std::string extension = io::suffix(sourcePath);
+    if (!formatNameForExtension(extension).empty()) {
+        return true;
+    }
+
+    return isMpegAudioExtension(extension)
+           && (QFileInfo(sourcePath.toQString()).size() == 0 || mpegAudioLayer2Info(sourcePath).has_value());
 }
 
 void ProjectActionsController::startQuickEdit(const IAudacityProjectPtr& project, const muse::io::path_t& sourcePath)
@@ -1192,10 +1221,14 @@ bool ProjectActionsController::exportQuickEditToSource(const IAudacityProjectPtr
 
     //! NOTE: MPEG Layer II audio may use another extension than .mp2 (e.g. .mpg in RCS Zetta)
     const std::string mp2Format = formatNameForExtension("mp2");
+    const bool isNewFile = QFileInfo(sourcePath.toQString()).size() == 0;
     std::optional<MpegAudioLayer2Info> mpegAudio;
     if (format.empty() || format == mp2Format) {
         mpegAudio = mpegAudioLayer2Info(sourcePath);
         if (mpegAudio) {
+            format = mp2Format;
+        } else if (format.empty() && isNewFile && isMpegAudioExtension(extension)) {
+            //! NOTE: a new (empty) .mpg file has no frames to look at: write MP2 with the export preferences
             format = mp2Format;
         }
     }
@@ -1286,7 +1319,10 @@ bool ProjectActionsController::exportQuickEditToSource(const IAudacityProjectPtr
     const QDir backupDir(QDir(quickEditBackupRoot()).filePath(
                              QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss-zzz") + "_" + sourceBaseName));
 
-    if (!QDir().mkpath(backupDir.path()) || !QFile::copy(sourcePath.toQString(), backupDir.filePath(sourceFileName))) {
+    //! NOTE: a new (empty) file has no original contents to back up
+    const bool backupOriginal = !isNewFile;
+    if (!QDir().mkpath(backupDir.path())
+        || (backupOriginal && !QFile::copy(sourcePath.toQString(), backupDir.filePath(sourceFileName)))) {
         interactive()->error(muse::trc("project", "Export error"),
                              muse::mtrc("project", "Could not back up \"%1\" into \"%2\", the file was not saved.")
                              .arg(sourcePath.toString()).arg(muse::String::fromQString(backupDir.path())).toStdString());

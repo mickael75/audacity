@@ -194,10 +194,12 @@ void ApplicationActionController::onDropEvent(QDropEvent* event)
         });
     }
 
+    //! NOTE: audio files dropped from the file manager are quick edited: saving writes back to each dropped file
     if (!mediaFiles.isEmpty()) {
         muse::async::Async::call(this, [this, mediaFiles]() {
             dispatcher()->dispatch("project-import-startup-media",
-                                   ActionData::make_arg2<QStringList, bool>(mediaFiles, false));
+                                   ActionData::make_arg3<QStringList, bool, bool>(mediaFiles, false /*removeAfterImport*/,
+                                                                                  true /*quickEdit*/));
         });
     }
 }

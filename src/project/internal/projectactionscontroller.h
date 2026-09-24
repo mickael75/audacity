@@ -132,6 +132,7 @@ private:
     bool isQuickEditProject(const IAudacityProjectPtr& project) const;
     bool exportQuickEditToSource(const IAudacityProjectPtr& project);
     std::string formatNameForExtension(const std::string& extension) const;
+    bool canQuickEdit(const muse::io::path_t& sourcePath) const;
 
     bool askAboutStoppingCloudSync();
     muse::Ret openPageIfNeed(muse::Uri pageUri);
