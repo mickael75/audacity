@@ -1335,7 +1335,23 @@ bool ProjectActionsController::exportQuickEditToSource(const IAudacityProjectPtr
         LOGW() << "could not back up the quick edit project to " << projectBackupPath;
     }
 
-    if (!overwriteFileContents(tempPath.toQString(), sourcePath.toQString())) {
+    //! NOTE: the application which launched the quick edit may keep the file open, allowing to replace it but not
+    //! to write into it: then replace it with a copy of the export under the same name (via a file next to it)
+    bool written = overwriteFileContents(tempPath.toQString(), sourcePath.toQString());
+    if (!written) {
+        LOGW() << "could not rewrite " << sourcePath.toQString() << " in place, replacing it";
+
+        const QFileInfo sourceInfo(sourcePath.toQString());
+        const muse::io::path_t siblingPath(sourceInfo.dir().filePath("." + sourceInfo.fileName() + ".quickedit"));
+        QFile::remove(siblingPath.toQString());
+        written = QFile::copy(tempPath.toQString(), siblingPath.toQString())
+                  && fileSystem()->move(siblingPath, sourcePath, true /*replace*/);
+        if (!written) {
+            QFile::remove(siblingPath.toQString());
+        }
+    }
+
+    if (!written) {
         //! NOTE: keep the exported file, the original may be partially written
         tempDir.setAutoRemove(false);
         interactive()->error(muse::trc("project", "Export error"),

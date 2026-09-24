@@ -167,7 +167,9 @@ void StartupScenario::runAfterSplashScreen()
 
     auto promise = interactive()->open(startupUri);
     promise.onResolve(this, [this, modeType](const muse::Val&) {
+        LOGI() << "startup page opened, loading effects";
         effectsProviderInitializer()->callAfterSplashScreen();
+        LOGI() << "effects loaded";
 
         onStartupPageOpened(modeType);
     });
@@ -224,6 +226,7 @@ void StartupScenario::onStartupPageOpened(StartupModeType modeType)
 
         dispatcher()->dispatch("project-import-startup-media",
                                ActionData::make_arg3<QStringList, bool, bool>(files, m_removeMediaFilesAfterImport, m_quickEditMode));
+        LOGI() << "startup media opened";
         return;
     }
 
