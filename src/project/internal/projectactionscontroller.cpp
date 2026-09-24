@@ -6,6 +6,8 @@
 #include <sndfile.h>
 
 #include <algorithm>
+#include <cctype>
+#include <optional>
 #include <variant>
 
 #include "framework/global/async/async.h"
@@ -44,6 +46,103 @@ static const muse::Uri CUSTOM_MAPPING("audacity://project/export/mapping");
 static const QString AUDACITY_URL_SCHEME("audacity");
 static const QString OPEN_PROJECT_URL_HOSTNAME("open-project");
 
+static muse::Val exportParameter(int id, const muse::Val& value)
+{
+    muse::ValMap entry;
+    entry["id"] = muse::Val(id);
+    entry["value"] = value;
+    return muse::Val(entry);
+}
+
+struct MpegAudioLayer2Info {
+    bool mpeg1 = true;
+    int bitrateKbps = 0;
+};
+
+//! NOTE: some broadcast systems (e.g. RCS Zetta) store MPEG-1/2 Layer II audio with a video extension (.mpg):
+//! detect it from its frame headers (two consecutive valid frames) so that it can be written back as MP2
+static std::optional<MpegAudioLayer2Info> mpegAudioLayer2Info(const muse::io::path_t& path)
+{
+    QFile file(path.toQString());
+    if (!file.open(QIODevice::ReadOnly)) {
+        return std::nullopt;
+    }
+
+    //! NOTE: skip an ID3v2 tag
+    const QByteArray id3 = file.read(10);
+    qint64 offset = 0;
+    if (id3.size() == 10 && id3.startsWith("ID3")) {
+        const auto b = [&id3](int i) { return static_cast<qint64>(static_cast<unsigned char>(id3.at(i)) & 0x7F); };
+        offset = 10 + ((b(6) << 21) | (b(7) << 14) | (b(8) << 7) | b(9));
+        if (static_cast<unsigned char>(id3.at(5)) & 0x10) {
+            offset += 10;
+        }
+    }
+
+    if (!file.seek(offset)) {
+        return std::nullopt;
+    }
+
+    const QByteArray data = file.read(64 * 1024);
+    const auto* bytes = reinterpret_cast<const unsigned char*>(data.constData());
+    const int size = static_cast<int>(data.size());
+
+    //! NOTE: a real MPEG video (program / video stream) must not be overwritten with audio only
+    if (size >= 4 && bytes[0] == 0x00 && bytes[1] == 0x00 && bytes[2] == 0x01 && (bytes[3] == 0xBA || bytes[3] == 0xB3)) {
+        return std::nullopt;
+    }
+
+    static const int MPEG1_BITRATES[16] = { 0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0 };
+    static const int MPEG2_BITRATES[16] = { 0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0 };
+    static const int MPEG1_RATES[4] = { 44100, 48000, 32000, 0 };
+    static const int MPEG2_RATES[4] = { 22050, 24000, 16000, 0 };
+
+    //! returns the frame length, or 0 when there is no Layer II frame header at pos
+    auto frameAt = [bytes, size](int pos, MpegAudioLayer2Info& info) -> int {
+        if (pos < 0 || pos + 4 > size || bytes[pos] != 0xFF || (bytes[pos + 1] & 0xE0) != 0xE0) {
+            return 0;
+        }
+
+        const int version = (bytes[pos + 1] >> 3) & 0x3; // 3: MPEG-1, 2: MPEG-2 (MPEG-2.5 isn't supported by the encoder)
+        const int layer = (bytes[pos + 1] >> 1) & 0x3;   // 2: Layer II
+        if (layer != 2 || (version != 3 && version != 2)) {
+            return 0;
+        }
+
+        const bool mpeg1 = version == 3;
+        const int kbps = (mpeg1 ? MPEG1_BITRATES : MPEG2_BITRATES)[bytes[pos + 2] >> 4];
+        const int rate = (mpeg1 ? MPEG1_RATES : MPEG2_RATES)[(bytes[pos + 2] >> 2) & 0x3];
+        if (kbps == 0 || rate == 0) {
+            return 0;
+        }
+
+        info = { mpeg1, kbps };
+        return 144000 * kbps / rate + ((bytes[pos + 2] >> 1) & 0x1);
+    };
+
+    for (int pos = 0; pos + 4 <= size; ++pos) {
+        MpegAudioLayer2Info info;
+        const int length = frameAt(pos, info);
+        if (length == 0) {
+            continue;
+        }
+
+        MpegAudioLayer2Info next;
+        if (frameAt(pos + length, next) > 0 && next.mpeg1 == info.mpeg1) {
+            return info;
+        }
+    }
+
+    return std::nullopt;
+}
+
+//! NOTE: mod-mp2: option 0 is the MPEG version (1: MPEG-1), options 1 / 2 the MPEG-1 / MPEG-2 bitrate
+static muse::ValList mp2EncodingParameters(const MpegAudioLayer2Info& info)
+{
+    return { exportParameter(0, muse::Val(info.mpeg1 ? 1 : 0)),
+             exportParameter(info.mpeg1 ? 1 : 2, muse::Val(info.bitrateKbps)) };
+}
+
 //! NOTE: export parameters (see mod-pcm / mod-flac option ids) reproducing the encoding of the given audio file,
 //! or an empty list when it can't be read or the format isn't handled
 static muse::ValList sourceEncodingParameters(const muse::io::path_t& path)
@@ -64,13 +163,6 @@ static muse::ValList sourceEncodingParameters(const muse::io::path_t& path)
     const int container = info.format & SF_FORMAT_TYPEMASK;
     const int subtype = info.format & SF_FORMAT_SUBMASK;
 
-    auto param = [](int id, const muse::Val& value) {
-        muse::ValMap entry;
-        entry["id"] = muse::Val(id);
-        entry["value"] = value;
-        return muse::Val(entry);
-    };
-
     switch (container) {
     case SF_FORMAT_WAV:
     case SF_FORMAT_WAVEX:
@@ -90,12 +182,12 @@ static muse::ValList sourceEncodingParameters(const muse::io::path_t& path)
 
         //! NOTE: mod-pcm: option 0 is the header type, option <header type> is its encoding
         const int type = container == SF_FORMAT_AIFF ? SF_FORMAT_AIFF : SF_FORMAT_WAV;
-        return { param(0, muse::Val(type)), param(type, muse::Val(subtype)) };
+        return { exportParameter(0, muse::Val(type)), exportParameter(type, muse::Val(subtype)) };
     }
     case SF_FORMAT_FLAC: {
         //! NOTE: mod-flac: option 0 is the bit depth, option 1 the compression level
         const std::string bitDepth = subtype == SF_FORMAT_PCM_24 ? "24" : "16";
-        return { param(0, muse::Val(bitDepth)), param(1, muse::Val(std::string("5"))) };
+        return { exportParameter(0, muse::Val(bitDepth)), exportParameter(1, muse::Val(std::string("5"))) };
     }
     default:
         return {};
@@ -1023,9 +1115,13 @@ bool ProjectActionsController::isQuickEditProject(const IAudacityProjectPtr& pro
 
 std::string ProjectActionsController::formatNameForExtension(const std::string& extension) const
 {
+    std::string lowerExtension = extension;
+    std::transform(lowerExtension.begin(), lowerExtension.end(), lowerExtension.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
     for (const std::string& format : exporter()->formatsList()) {
         const auto extensions = exporter()->formatExtensions(format);
-        if (std::find(extensions.cbegin(), extensions.cend(), extension) != extensions.cend()) {
+        if (std::find(extensions.cbegin(), extensions.cend(), lowerExtension) != extensions.cend()) {
             return format;
         }
     }
@@ -1042,7 +1138,17 @@ bool ProjectActionsController::exportQuickEditToSource(const IAudacityProjectPtr
 
     const muse::io::path_t sourcePath = it->second.path;
     const std::string extension = io::suffix(sourcePath);
-    const std::string format = formatNameForExtension(extension);
+    std::string format = formatNameForExtension(extension);
+
+    //! NOTE: MPEG Layer II audio may use another extension than .mp2 (e.g. .mpg in RCS Zetta)
+    const std::string mp2Format = formatNameForExtension("mp2");
+    std::optional<MpegAudioLayer2Info> mpegAudio;
+    if (format.empty() || format == mp2Format) {
+        mpegAudio = mpegAudioLayer2Info(sourcePath);
+        if (mpegAudio) {
+            format = mp2Format;
+        }
+    }
 
     if (format.empty()) {
         interactive()->error(muse::trc("project", "Export error"),
@@ -1076,9 +1182,9 @@ bool ProjectActionsController::exportQuickEditToSource(const IAudacityProjectPtr
         options[importexport::IExporter::OptionKey::ExportSampleRate] = muse::Val(static_cast<int>(rate));
     }
 
-    //! NOTE: keep the source bit depth / encoding when it can be read (WAV, AIFF, FLAC);
+    //! NOTE: keep the source bit depth / encoding when it can be read (WAV, AIFF, FLAC, MP2);
     //! other formats (MP3, OGG...) use the user's export preferences
-    const muse::ValList encodingParameters = sourceEncodingParameters(sourcePath);
+    const muse::ValList encodingParameters = mpegAudio ? mp2EncodingParameters(*mpegAudio) : sourceEncodingParameters(sourcePath);
     if (!encodingParameters.empty()) {
         options[importexport::IExporter::OptionKey::Parameters] = muse::Val(encodingParameters);
     }
