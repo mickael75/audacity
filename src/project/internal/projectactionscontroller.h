@@ -2,6 +2,9 @@
 #define AU_PROJECT_PROJECTACTIONSCONTROLLER_H
 
 #include <map>
+#include <memory>
+
+#include <QLockFile>
 
 #include "framework/global/async/asyncable.h"
 #include "framework/global/modularity/ioc.h"
@@ -169,9 +172,11 @@ private:
         muse::io::path_t path;
         //! NOTE: true while the source file matches the project (just opened or just exported back)
         bool upToDate = true;
+        //! NOTE: held while the file is quick edited, to know when another Audacity process edits it too
+        std::shared_ptr<QLockFile> lock;
     };
 
-    void startQuickEdit(const IAudacityProjectPtr& project, const muse::io::path_t& sourcePath);
+    void startQuickEdit(const IAudacityProjectPtr& project, const muse::io::path_t& sourcePath, std::shared_ptr<QLockFile> lock);
     bool isQuickEditProjectUpToDate(const IAudacityProjectPtr& project) const;
 
     //! NOTE: source audio files for projects opened in "quick edit" mode (see --quick-edit),

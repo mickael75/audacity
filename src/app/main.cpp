@@ -188,7 +188,9 @@ int main(int argc, char** argv)
     if (commandLineParser.runMode() == muse::IApplication::RunMode::AudioPluginRegistration) {
         qApplication = new QCoreApplication(argcFinal, argvFinal);
     } else {
-        if (!qEnvironmentVariableIsSet("AU_ALLOW_MULTIPLE_PROCESSES")) {
+        //! NOTE: a quick edit runs in its own process: the application which launched it (e.g. RCS Zetta) waits for
+        //! this process to exit to take the file back, and several quick edits can run at once (record + edit)
+        if (!qEnvironmentVariableIsSet("AU_ALLOW_MULTIPLE_PROCESSES") && !commandLineParser.options()->startup.quickEdit) {
             QStringList forwardedArgs;
             forwardedArgs.reserve(argcFinal - 1);
             for (int i = 1; i < argcFinal; ++i) {

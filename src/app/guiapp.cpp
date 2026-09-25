@@ -131,6 +131,12 @@ void GuiApp::doSetup(const std::shared_ptr<muse::CmdOptions>& options)
         return;
     }
 
+    //! NOTE: a quick edit process doesn't take files opened later: it must exit when its own file is done
+    const auto audacityOptions = std::dynamic_pointer_cast<AudacityCmdOptions>(options);
+    if (audacityOptions && audacityOptions->startup.quickEdit) {
+        return;
+    }
+
     const QString appId = QCoreApplication::applicationName();
     if (!m_singleInstance.start(appId)) {
         return;

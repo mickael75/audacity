@@ -52,6 +52,12 @@ void SessionsManager::deinit()
         return;
     }
 
+    //! NOTE: a quick edit process isn't part of the session, and must not reset the session of
+    //! another Audacity process running at the same time
+    if (isQuickEditProcess()) {
+        return;
+    }
+
     if (configuration()->startupModeType() != StartupModeType::ContinueLastSession) {
         reset();
     }
@@ -80,8 +86,18 @@ void SessionsManager::reset()
     configuration()->setSessionProjectsPaths({});
 }
 
+bool SessionsManager::isQuickEditProcess() const
+{
+    return startupScenario() && startupScenario()->quickEditMode();
+}
+
 void SessionsManager::update()
 {
+    //! NOTE: quick edit projects are temporary, bound to a file of another application: never restored
+    if (isQuickEditProcess()) {
+        return;
+    }
+
     io::path_t newProjectPath;
 
     if (auto project = globalContext()->currentProject()) {

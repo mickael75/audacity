@@ -1,6 +1,7 @@
 #include "projectactionscontroller.h"
 
 #include <QFile>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QFileDialog>
@@ -295,6 +296,18 @@ static QString existingFilePath(const QString& path)
     }
 
     return current;
+}
+
+//! NOTE: one lock file per quick edited file, shared by all the Audacity processes
+static std::shared_ptr<QLockFile> quickEditLock(const QString& path)
+{
+    const QByteArray key = QFileInfo(path).absoluteFilePath().normalized(QString::NormalizationForm_C).toLower().toUtf8();
+    const QString name = "audacity-quick-edit-" + QCryptographicHash::hash(key, QCryptographicHash::Md5).toHex() + ".lock";
+
+    auto lock = std::make_shared<QLockFile>(QDir(QDir::tempPath()).filePath(name));
+    //! NOTE: never stale while its process runs (a recording may last long); the lock of a dead process is removed
+    lock->setStaleLockTime(0);
+    return lock;
 }
 
 static bool isMpegAudioExtension(std::string extension)
@@ -909,26 +922,44 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
         LOGI() << "quick edit of " << actualPaths.front().toQString();
     }
 
+    //! NOTE: the same file may already be quick edited (or recorded into) by another Audacity process
+    std::shared_ptr<QLockFile> lock;
+    bool openedElsewhere = false;
+    if (isQuickEdit) {
+        lock = quickEditLock(actualPaths.front().toQString());
+        openedElsewhere = !lock->tryLock(0);
+        if (openedElsewhere) {
+            lock.reset();
+        }
+    }
+
     //! NOTE: the calling application may give a file to create (missing or empty, e.g. to record into it):
     //! quick edit then starts with an empty project, which is saved to that file
     const bool isNewQuickEditFile = isQuickEdit && QFileInfo(actualPaths.front().toQString()).size() == 0;
-    if (isNewQuickEditFile) {
+    if (openedElsewhere) {
+        toastService()->show(muse::trc("project", "Already open"),
+                             muse::mtrc("project", "\"%1\" is also open in another Audacity window: what is saved last "
+                                                   "replaces the file.").arg(actualPaths.front().toString()).toStdString(),
+                             muse::ui::IconCode::Code::WARNING, true /*dismissable*/, {});
+    }
+
+    if (isNewQuickEditFile && !openedElsewhere) {
         //! NOTE: tell it, a wrong path would otherwise silently open an empty project
         toastService()->show(muse::trc("project", "Recording"),
                              muse::mtrc("project", "Recording into \"%1\". Save (Ctrl+S) to stop, write the file and close.")
                              .arg(actualPaths.front().toString()).toStdString(),
                              muse::ui::IconCode::Code::WARNING, true /*dismissable*/, {});
-    } else {
+    } else if (!isNewQuickEditFile) {
         ret = project->import(actualPaths);
     }
 
     //! NOTE: only files which can be written back are quick edited, others open as a regular project
     if (ret && isQuickEdit && canQuickEdit(actualPaths.front())) {
-        startQuickEdit(project, actualPaths.front());
+        startQuickEdit(project, actualPaths.front(), lock);
 
         //! NOTE: a new (empty) file is given to record into (e.g. RCS Zetta "record"): start recording right away,
-        //! once the project page is ready
-        if (isNewQuickEditFile) {
+        //! once the project page is ready (not when another Audacity is already recording into it)
+        if (isNewQuickEditFile && !openedElsewhere) {
             muse::async::Async::call(this, [this]() {
                 dispatcher()->dispatch("record-on-new-track");
             });
@@ -998,9 +1029,10 @@ std::string ProjectActionsController::quickEditFormat(const muse::io::path_t& so
     return std::string();
 }
 
-void ProjectActionsController::startQuickEdit(const IAudacityProjectPtr& project, const muse::io::path_t& sourcePath)
+void ProjectActionsController::startQuickEdit(const IAudacityProjectPtr& project, const muse::io::path_t& sourcePath,
+                                              std::shared_ptr<QLockFile> lock)
 {
-    m_quickEditSourceFiles[project.get()] = QuickEditSource { sourcePath, true };
+    m_quickEditSourceFiles[project.get()] = QuickEditSource { sourcePath, true, std::move(lock) };
 
     //! NOTE: any edit after opening / exporting makes the source file outdated again
     IAudacityProject* rawProject = project.get();

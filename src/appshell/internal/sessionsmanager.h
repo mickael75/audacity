@@ -31,6 +31,7 @@
 #include "iappshellconfiguration.h"
 #include "multiwindows/imultiwindowsprovider.h"
 #include "isessionsmanager.h"
+#include "appshell/istartupscenario.h"
 #include "au3wrap/iau3project.h"
 
 #include "project/iprojectconfiguration.h"
@@ -46,6 +47,7 @@ class SessionsManager : public ISessionsManager, public muse::async::Asyncable, 
 
     muse::ContextInject<muse::actions::IActionsDispatcher> dispatcher { this };
     muse::ContextInject<au::context::IGlobalContext> globalContext { this };
+    muse::ContextInject<IStartupScenario> startupScenario { this };
 
 public:
     SessionsManager(const muse::modularity::ContextPtr& ctx)
@@ -60,6 +62,7 @@ public:
     void reset() override;
 
 private:
+    bool isQuickEditProcess() const;
     void update();
 
     void removeProjectFromSession(const muse::io::path_t& projectPath);
