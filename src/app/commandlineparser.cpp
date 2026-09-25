@@ -7,6 +7,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFileInfo>
 #include <QtGlobal>
 
 #include "global/io/dir.h"
@@ -24,7 +25,12 @@ static QStringList prepareArguments(int argc, char** argv)
     QStringList args;
 
     for (int i = 0; i < argc; ++i) {
+#if defined(_MSC_VER)
+        //! NOTE: main() converts the arguments to UTF-8 on Windows, reading them as ANSI would garble accents
+        QString arg = QString::fromUtf8(argv[i]);
+#else
         QString arg = QString::fromLocal8Bit(argv[i]);
+#endif
 
 #ifndef NDEBUG
         if (arg.startsWith("-qmljsdebugger")) {
@@ -97,9 +103,55 @@ void CommandLineParser::init()
 #endif
 }
 
+//! NOTE: a launcher may pass the quick edit file without quotes (or with doubled quotes): its path is then split at
+//! its spaces, and a part like "-.mpg" looks like options. Join the parts again, from the first absolute path to the
+//! end, when they don't each name an existing file (several files) and the joined path is in an existing directory.
+static QStringList joinSplitQuickEditPath(const QStringList& args)
+{
+    if (!args.contains("--quick-edit")) {
+        return args;
+    }
+
+    auto isAbsolutePath = [](const QString& arg) {
+        const QString path = QString(arg).remove(u'"');
+        return (path.size() > 2 && path.at(1) == u':' && (path.at(2) == u'\\' || path.at(2) == u'/'))
+               || path.startsWith("\\\\") || path.startsWith("//") || path.startsWith(u'/');
+    };
+
+    for (int i = 1; i < args.size(); ++i) {
+        const QString& previous = args.at(i - 1);
+        if (!isAbsolutePath(args.at(i)) || previous == "--live-dir" || previous == "--import-media-file") {
+            continue;
+        }
+
+        const QStringList parts = args.mid(i);
+        if (parts.size() == 1) {
+            return args;
+        }
+
+        bool allExist = true;
+        for (const QString& part : parts) {
+            allExist = allExist && QFileInfo::exists(QString(part).remove(u'"'));
+        }
+        if (allExist) {
+            return args;
+        }
+
+        const QString joined = parts.join(u' ').remove(u'"');
+        if (!QFileInfo(joined).absoluteDir().exists()) {
+            return args;
+        }
+
+        return args.mid(0, i) << joined;
+    }
+
+    return args;
+}
+
 void CommandLineParser::parse(int argc, char** argv)
 {
-    QStringList args = prepareArguments(argc, argv);
+    QStringList args = joinSplitQuickEditPath(prepareArguments(argc, argv));
+    m_arguments = args;
     m_parser.parse(args);
 
     auto doubleValue = [this](const QString& name) -> std::optional<double> {
@@ -242,7 +294,9 @@ void CommandLineParser::parse(int argc, char** argv)
 void CommandLineParser::processBuiltinArgs(const QCoreApplication& app)
 {
     //! NOTE: some options require an instance of QCoreApplication
-    m_parser.process(app);
+    //! (with the arguments as prepared by parse(), e.g. a split quick edit path joined again)
+    Q_UNUSED(app);
+    m_parser.process(m_arguments);
 }
 
 muse::IApplication::RunMode CommandLineParser::runMode() const

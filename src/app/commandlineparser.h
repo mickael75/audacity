@@ -36,6 +36,7 @@ public:
 
 private:
     QCommandLineParser m_parser;
+    QStringList m_arguments;
     const std::shared_ptr<AudacityCmdOptions> m_options = std::make_shared<AudacityCmdOptions>();
 };
 }
