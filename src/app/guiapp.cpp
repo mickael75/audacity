@@ -11,6 +11,7 @@
 #include "framework/ui/imainwindow.h"
 #include "framework/actions/iactionsdispatcher.h"
 #include "framework/actions/actiontypes.h"
+#include "framework/multiwindows/imultiwindowsprovider.h"
 
 #include "appshell/istartupscenario.h"
 #include "appshell/internal/splashscreen/splashscreen.h"
@@ -93,6 +94,8 @@ void GuiApp::doStartupScenario(const muse::modularity::ContextPtr& ctxId)
     startupScenario->setStartupMediaFiles(options->startup.mediaFiles);
     startupScenario->setRemoveMediaFilesAfterImport(options->startup.removeMediaFilesAfterImport);
     startupScenario->setQuickEditMode(options->startup.quickEdit);
+    startupScenario->setQuickEditToken(options->startup.quickEditToken);
+    setLiveRecordDir(options->startup.liveRecordDir);
     if (options->startup.startupUrl.has_value()) {
         startupScenario->setStartupUrl(options->startup.startupUrl.value());
     }
@@ -149,9 +152,30 @@ void GuiApp::doSetup(const std::shared_ptr<muse::CmdOptions>& options)
     });
 }
 
+//! NOTE: read by project::LiveRecordMirror, for the quick edits of this process (a handed off quick edit may give it)
+void GuiApp::setLiveRecordDir(const QString& dir)
+{
+    if (!dir.isEmpty()) {
+        qputenv("AU_LIVE_RECORD_DIR", dir.toLocal8Bit());
+    }
+}
+
 void GuiApp::onSecondInstanceArgs(const QStringList& args)
 {
     LOGI() << "second instance handed off args: " << args;
+
+    //! NOTE: a quick edit opens in its own new window right away; the other process waits for its end
+    {
+        const auto quickEditOptions = std::dynamic_pointer_cast<AudacityCmdOptions>(makeContextOptions(muse::StringList(args)));
+        if (quickEditOptions && quickEditOptions->startup.quickEdit && !quickEditOptions->startup.mediaFiles.empty()) {
+            setLiveRecordDir(quickEditOptions->startup.liveRecordDir);
+            auto windowsProvider = muse::modularity::globalIoc()->resolve<muse::mi::IMultiWindowsProvider>("app");
+            if (windowsProvider) {
+                windowsProvider->openNewWindow(args);
+                return;
+            }
+        }
+    }
 
     // Raise the first window when the instance is activated
     // TODO: define rules which window should be activated, ie first, last, last used

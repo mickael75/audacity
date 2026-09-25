@@ -3,8 +3,14 @@
  */
 
 #include <QApplication>
+#include <QDir>
+#include <QElapsedTimer>
+#include <QFile>
+#include <QLockFile>
 #include <QStyleHints>
 #include <QTextCodec>
+#include <QThread>
+#include <QUuid>
 
 #include <csignal>
 
@@ -52,6 +58,38 @@ static void crashCallback(int signum)
 #ifdef Q_OS_WIN
 #include "winleaktracker.h"
 #endif
+
+//! NOTE: wait for the end of a quick edit handed to a running Audacity (see ProjectActionsController::QuickEditHandoff):
+//! it holds "<temp>/audacity-quick-edit-<token>.lock" during the edit and writes "<...>.done" at its end
+static void waitForQuickEditEnd(const QString& token)
+{
+    static constexpr qint64 START_TIMEOUT_MS = 120000;
+
+    const QString basePath = QDir(QDir::tempPath()).filePath("audacity-quick-edit-" + token);
+    const QString donePath = basePath + ".done";
+    QLockFile lock(basePath + ".lock");
+    lock.setStaleLockTime(0);
+
+    QElapsedTimer sinceHandoff;
+    sinceHandoff.start();
+    bool started = false;
+
+    while (!QFile::exists(donePath)) {
+        if (lock.tryLock(0)) {
+            //! NOTE: nobody holds it: the edit didn't start yet, or it ended (Audacity closed or crashed)
+            lock.unlock();
+            if (started || sinceHandoff.elapsed() > START_TIMEOUT_MS) {
+                break;
+            }
+        } else {
+            started = true;
+        }
+        QThread::msleep(250);
+    }
+
+    QFile::remove(donePath);
+    LOGI() << "quick edit " << token << " ended";
+}
 
 int main(int argc, char** argv)
 {
@@ -188,16 +226,36 @@ int main(int argc, char** argv)
     if (commandLineParser.runMode() == muse::IApplication::RunMode::AudioPluginRegistration) {
         qApplication = new QCoreApplication(argcFinal, argvFinal);
     } else {
-        //! NOTE: a quick edit runs in its own process: the application which launched it (e.g. RCS Zetta) waits for
-        //! this process to exit to take the file back, and several quick edits can run at once (record + edit)
-        if (!qEnvironmentVariableIsSet("AU_ALLOW_MULTIPLE_PROCESSES") && !commandLineParser.options()->startup.quickEdit) {
+        if (!qEnvironmentVariableIsSet("AU_ALLOW_MULTIPLE_PROCESSES")) {
+            const auto& startup = commandLineParser.options()->startup;
+            const bool quickEdit = startup.quickEdit && !startup.mediaFiles.empty();
+
             QStringList forwardedArgs;
-            forwardedArgs.reserve(argcFinal - 1);
-            for (int i = 1; i < argcFinal; ++i) {
-                forwardedArgs.append(QString::fromUtf8(argvFinal[i]));
+            QString quickEditToken;
+            if (quickEdit) {
+                //! NOTE: a running Audacity opens the quick edit in a new window right away (no startup time), and this
+                //! process only waits for the end of the edit: the application which launched it (e.g. RCS Zetta) takes
+                //! the file back when this process exits. Without a running Audacity, this process does the quick edit.
+                quickEditToken = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                forwardedArgs << "--quick-edit" << "--quick-edit-token" << quickEditToken;
+                if (!startup.liveRecordDir.isEmpty()) {
+                    forwardedArgs << "--live-dir" << startup.liveRecordDir;
+                }
+                for (const auto& file : startup.mediaFiles) {
+                    forwardedArgs << file.toQString();
+                }
+            } else {
+                forwardedArgs.reserve(argcFinal - 1);
+                for (int i = 1; i < argcFinal; ++i) {
+                    forwardedArgs.append(QString::fromUtf8(argvFinal[i]));
+                }
             }
+
             if (muse::mi::activateExistingInstance(QString::fromLatin1(appName), forwardedArgs)) {
                 LOGI() << "existing Audacity instance activated";
+                if (quickEdit) {
+                    waitForQuickEditEnd(quickEditToken);
+                }
                 LOGI() << "exiting";
                 return 0;
             }

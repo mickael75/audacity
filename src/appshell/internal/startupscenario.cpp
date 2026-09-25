@@ -121,6 +121,11 @@ void StartupScenario::setQuickEditMode(bool quickEdit)
     m_quickEditMode = quickEdit;
 }
 
+void StartupScenario::setQuickEditToken(const QString& token)
+{
+    m_quickEditToken = token;
+}
+
 void StartupScenario::setStartupUrl(const QString& url)
 {
     if (m_startupCompleted && !url.isEmpty()) {
@@ -224,8 +229,9 @@ void StartupScenario::onStartupPageOpened(StartupModeType modeType)
             files << file.toQString();
         }
 
-        dispatcher()->dispatch("project-import-startup-media",
-                               ActionData::make_arg3<QStringList, bool, bool>(files, m_removeMediaFilesAfterImport, m_quickEditMode));
+        ActionData data = ActionData::make_arg3<QStringList, bool, bool>(files, m_removeMediaFilesAfterImport, m_quickEditMode);
+        data.setArg<QString>(3, m_quickEditToken);
+        dispatcher()->dispatch("project-import-startup-media", data);
         LOGI() << "startup media opened";
         return;
     }

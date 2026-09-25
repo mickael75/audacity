@@ -99,7 +99,7 @@ private:
     void importFiles(const muse::actions::ActionData& args);
 
     void importStartupMedia(const muse::actions::ActionData& args);
-    muse::Ret processMediaFiles(const muse::io::paths_t& paths, bool quickEdit = false);
+    muse::Ret processMediaFiles(const muse::io::paths_t& paths, bool quickEdit = false, const QString& quickEditToken = QString());
 
     muse::Ret openProject(const muse::io::path_t& path,
                           const muse::String& displayNameOverride = muse::String(), const muse::String& projectId = muse::String());
@@ -185,6 +185,20 @@ private:
     //! of prompting for a project save location
     std::map<IAudacityProject*, QuickEditSource> m_quickEditSourceFiles;
     std::unique_ptr<LiveRecordMirror> m_liveRecordMirror;
+
+    //! NOTE: a quick edit handed off by another Audacity process (which the launching application waits for):
+    //! "<temp>/audacity-quick-edit-<token>.lock" is held while the project is open, "<...>.done" written at its end
+    class QuickEditHandoff
+    {
+    public:
+        explicit QuickEditHandoff(const QString& token);
+        ~QuickEditHandoff();
+
+    private:
+        QString m_basePath;
+        QLockFile m_lock;
+    };
+    std::map<IAudacityProject*, std::unique_ptr<QuickEditHandoff> > m_quickEditHandoffs;
 
     ProjectBeingDownloaded m_projectBeingDownloaded;
     muse::async::Notification m_projectBeingDownloadedChanged;

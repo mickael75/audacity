@@ -32,6 +32,10 @@ struct AudacityCmdOptions : public muse::CmdOptions {
         //! NOTE: like Adobe Audition's external-editor "%F" workflow: import the file for editing
         //! and export changes back to the same path/format instead of prompting to save a project
         bool quickEdit = false;
+        //! NOTE: identifies a quick edit handed to a running Audacity by another process, which waits for its end
+        QString quickEditToken;
+        //! NOTE: see project::LiveRecordMirror
+        QString liveRecordDir;
     } startup;
 
     struct Testflow {

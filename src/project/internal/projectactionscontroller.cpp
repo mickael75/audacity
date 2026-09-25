@@ -8,6 +8,7 @@
 #include <QFileInfo>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QWindow>
 
 #include <sndfile.h>
 
@@ -832,6 +833,7 @@ void ProjectActionsController::importStartupMedia(const muse::actions::ActionDat
     const QStringList files = !args.empty() ? args.arg<QStringList>(0) : QStringList();
     const bool removeAfterImport = args.count() >= 2 ? args.arg<bool>(1) : false;
     const bool quickEdit = args.count() >= 3 ? args.arg<bool>(2) : false;
+    const QString quickEditToken = args.count() >= 4 ? args.arg<QString>(3) : QString();
 
     muse::io::paths_t filePaths;
     filePaths.reserve(files.size());
@@ -839,7 +841,7 @@ void ProjectActionsController::importStartupMedia(const muse::actions::ActionDat
         filePaths.emplace_back(file);
     }
 
-    Ret ret = processMediaFiles(filePaths, quickEdit);
+    Ret ret = processMediaFiles(filePaths, quickEdit, quickEditToken);
     if (removeAfterImport) {
         for (const auto& filePath : filePaths) {
             fileSystem()->remove(filePath);
@@ -851,7 +853,7 @@ void ProjectActionsController::importStartupMedia(const muse::actions::ActionDat
     }
 }
 
-muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& paths, bool quickEdit)
+muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& paths, bool quickEdit, const QString& quickEditToken)
 {
     if (paths.empty()) {
         return make_ret(Ret::Code::Cancel);
@@ -911,6 +913,10 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
     IAudacityProjectPtr project = createProjectInCurrentWindow();
     if (!project) {
         return make_ret(Ret::Code::InternalError);
+    }
+
+    if (!quickEditToken.isEmpty()) {
+        m_quickEditHandoffs[project.get()] = std::make_unique<QuickEditHandoff>(quickEditToken);
     }
 
     Ret ret = openPageIfNeed(PROJECT_PAGE_URI);
@@ -976,6 +982,26 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
     }
 
     return ret;
+}
+
+ProjectActionsController::QuickEditHandoff::QuickEditHandoff(const QString& token)
+    : m_basePath(QDir(QDir::tempPath()).filePath("audacity-quick-edit-" + token)), m_lock(m_basePath + ".lock")
+{
+    m_lock.setStaleLockTime(0);
+    //! NOTE: the waiting process tries the lock now and then: retry for a while
+    if (!m_lock.tryLock(5000)) {
+        LOGW() << "quick edit " << token << ": can't take " << m_basePath << ".lock";
+    }
+}
+
+ProjectActionsController::QuickEditHandoff::~QuickEditHandoff()
+{
+    //! NOTE: "done" first, so that the waiting process never sees the lock free without it
+    QFile done(m_basePath + ".done");
+    if (done.open(QIODevice::WriteOnly)) {
+        done.close();
+    }
+    m_lock.unlock();
 }
 
 bool ProjectActionsController::canQuickEdit(const muse::io::path_t& sourcePath) const
@@ -1140,6 +1166,7 @@ bool ProjectActionsController::closeOpenedProject(const bool quitApp)
 
         //! NOTE: finish the live recording file while the project still exists
         m_liveRecordMirror.reset();
+        m_quickEditHandoffs.erase(project.get());
 
         project->close();
 
@@ -1646,12 +1673,12 @@ bool ProjectActionsController::saveProject(SaveMode saveMode, SaveLocationType s
 
         //! NOTE: the application which launched the quick edit takes the file back once Audacity exits,
         //! so saving also closes Audacity (not when the save was asked by closing, which closes anyway)
+        //! Closing the window like the user would: only this window when there are others (e.g. a quick edit
+        //! handed to a running Audacity), else Audacity quits
         if (exported && !m_isProjectClosing) {
             muse::async::Async::call(this, [this]() {
-                if (application()->contexts().size() > 1) {
-                    closeOpenedProject(false);
-                } else {
-                    dispatcher()->dispatch("quit", actions::ActionData::make_arg1<bool>(false));
+                if (QWindow* window = mainWindow()->qWindow()) {
+                    window->close();
                 }
             });
         }

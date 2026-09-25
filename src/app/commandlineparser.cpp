@@ -82,6 +82,7 @@ void CommandLineParser::init()
                                           "With --quick-edit of a new file: also write the recording, while it runs, to a"
                                           " growing WAV file of this (shared) directory. Or set AU_LIVE_RECORD_DIR",
                                           "directory"));
+    m_parser.addOption(internalCommandLineOption("quick-edit-token", "Quick edit handed off by another process", "token"));
     m_parser.addOption(internalCommandLineOption("project-display-name-override", "Display name override", "name"));
 
     m_parser.addOption(QCommandLineOption({ "u", "url" }, "Open the given URL on startup", "url"));
@@ -222,6 +223,14 @@ void CommandLineParser::parse(int argc, char** argv)
 
     if (m_parser.isSet("quick-edit")) {
         m_options->startup.quickEdit = true;
+    }
+
+    if (m_parser.isSet("quick-edit-token")) {
+        m_options->startup.quickEditToken = m_parser.value("quick-edit-token");
+    }
+
+    if (m_parser.isSet("live-dir")) {
+        m_options->startup.liveRecordDir = m_parser.value("live-dir");
     }
 
     if (m_parser.isSet("F")) {
