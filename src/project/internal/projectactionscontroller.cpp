@@ -943,7 +943,7 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
                              muse::ui::IconCode::Code::WARNING, true /*dismissable*/, {});
     }
 
-    if (isNewQuickEditFile && !openedElsewhere) {
+    if (isNewQuickEditFile && !openedElsewhere && canQuickEdit(actualPaths.front())) {
         //! NOTE: tell it, a wrong path would otherwise silently open an empty project
         toastService()->show(muse::trc("project", "Recording"),
                              muse::mtrc("project", "Recording into \"%1\". Save (Ctrl+S) to stop, write the file and close.")
@@ -980,6 +980,12 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
 
 bool ProjectActionsController::canQuickEdit(const muse::io::path_t& sourcePath) const
 {
+    //! NOTE: never write audio over a program or a script
+    static const QStringList NEVER_WRITTEN = { "exe", "dll", "com", "bat", "cmd", "msi", "lnk", "ps1", "vbs", "js", "sys" };
+    if (NEVER_WRITTEN.contains(QFileInfo(sourcePath.toQString()).suffix(), Qt::CaseInsensitive)) {
+        return false;
+    }
+
     return !quickEditFormat(sourcePath).empty();
 }
 

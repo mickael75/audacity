@@ -117,6 +117,11 @@ void CommandLineParser::parse(int argc, char** argv)
 
     QStringList projectfiles;
     for (const QString& arg : m_parser.positionalArguments()) {
+        //! NOTE: a launcher may repeat the program in its arguments (e.g. "Audacity.exe --quick-edit %f"):
+        //! a program is never a file to open (and a quick edit would try to write it)
+        if (arg.endsWith(".exe", Qt::CaseInsensitive)) {
+            continue;
+        }
         projectfiles << fromUserInputPath(arg);
     }
 
