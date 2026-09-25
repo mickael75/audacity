@@ -37,6 +37,7 @@
 #include "project/iprojectconfiguration.h"
 #include "project/iprojectfilescontroller.h"
 #include "project/iaudacityproject.h"
+#include "liverecordmirror.h"
 #include "multiwindows/imultiwindowsprovider.h"
 
 namespace au::project {
@@ -183,6 +184,7 @@ private:
     //! keyed by the raw project pointer; saving such a project exports back to this path instead
     //! of prompting for a project save location
     std::map<IAudacityProject*, QuickEditSource> m_quickEditSourceFiles;
+    std::unique_ptr<LiveRecordMirror> m_liveRecordMirror;
 
     ProjectBeingDownloaded m_projectBeingDownloaded;
     muse::async::Notification m_projectBeingDownloadedChanged;

@@ -960,8 +960,17 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
         //! NOTE: a new (empty) file is given to record into (e.g. RCS Zetta "record"): start recording right away,
         //! once the project page is ready (not when another Audacity is already recording into it)
         if (isNewQuickEditFile && !openedElsewhere) {
-            muse::async::Async::call(this, [this]() {
+            //! NOTE: with a live recording directory, the recording is also written there while it runs
+            if (!LiveRecordMirror::liveRecordDir().isEmpty()) {
+                m_liveRecordMirror = std::make_unique<LiveRecordMirror>(iocContext());
+            }
+
+            const muse::io::path_t targetPath = actualPaths.front();
+            muse::async::Async::call(this, [this, project, targetPath]() {
                 dispatcher()->dispatch("record-on-new-track");
+                if (m_liveRecordMirror) {
+                    m_liveRecordMirror->start(project, targetPath);
+                }
             });
         }
     }
@@ -1122,6 +1131,9 @@ bool ProjectActionsController::closeOpenedProject(const bool quitApp)
 
     if (result) {
         interactive()->closeAllDialogsSync();
+
+        //! NOTE: finish the live recording file while the project still exists
+        m_liveRecordMirror.reset();
 
         project->close();
 

@@ -72,6 +72,10 @@ void CommandLineParser::init()
                                           "Edit the given media file directly: saving exports the changes back to its original path"
                                           " and location, keeping the Audacity project data in a temporary directory (like an"
                                           " external \"Edit In\" tool, e.g. launched with %f/%F)"));
+    m_parser.addOption(QCommandLineOption("live-dir",
+                                          "With --quick-edit of a new file: also write the recording, while it runs, to a"
+                                          " growing WAV file of this (shared) directory. Or set AU_LIVE_RECORD_DIR",
+                                          "directory"));
     m_parser.addOption(internalCommandLineOption("project-display-name-override", "Display name override", "name"));
 
     m_parser.addOption(QCommandLineOption({ "u", "url" }, "Open the given URL on startup", "url"));
