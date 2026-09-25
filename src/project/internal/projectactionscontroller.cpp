@@ -182,45 +182,119 @@ static QString quickEditBackupRoot()
     return QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation)).filePath("Audacity Quick Edit Backups");
 }
 
-//! NOTE: the calling application may pass a path with non-ASCII characters in another encoding
-//! (e.g. "Forêt" received as "ForÃªt" or "For?t"): find the existing file it means
-static QString existingQuickEditPath(const QString& path)
+//! NOTE: an accented character may be written as one character ("ê") or as a letter + a combining accent
+//! ("e" + "^"), which are different names for Windows; the calling application may also pass it in another
+//! encoding ("ForÃªt", "For?t"). These helpers find the existing file or directory which was meant.
+
+//! the name without accents, to compare names whatever the form of their accents
+static QString nameKey(const QString& name)
+{
+    QString key;
+    for (const QChar c : name.normalized(QString::NormalizationForm_D)) {
+        if (c.category() != QChar::Mark_NonSpacing) {
+            key += c;
+        }
+    }
+    return key;
+}
+
+static bool hasNonAsciiCharacters(const QString& name)
+{
+    for (const QChar c : name) {
+        if (c.unicode() > 127 || c == u'?') {
+            return true;
+        }
+    }
+    return false;
+}
+
+//! the entry of dir which the given name means, or an empty string
+static QString matchingEntryName(const QDir& dir, const QString& name)
+{
+    const QStringList variants = {
+        name.normalized(QString::NormalizationForm_C),
+        name.normalized(QString::NormalizationForm_D),
+        QString::fromUtf8(name.toLatin1()),     // UTF-8 bytes read as Latin-1
+        QString::fromLocal8Bit(name.toLatin1()) // ANSI code page bytes read as Latin-1
+    };
+    for (const QString& variant : variants) {
+        if (!variant.isEmpty() && !variant.contains(QChar::ReplacementCharacter) && dir.exists(variant)) {
+            return variant;
+        }
+    }
+
+    //! NOTE: an ASCII name is taken as is: it must not match another file (e.g. "resume" with "résumé")
+    if (!hasNonAsciiCharacters(name)) {
+        return QString();
+    }
+
+    const QStringList entries = dir.entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
+
+    //! NOTE: same name whatever the form of its accents
+    const QString key = nameKey(name);
+    QStringList matches;
+    for (const QString& entry : entries) {
+        if (nameKey(entry) == key) {
+            matches << entry;
+        }
+    }
+    if (matches.size() == 1) {
+        return matches.front();
+    }
+
+    //! NOTE: last resort, the only entry matching the name with any non-ASCII character as a wildcard
+    QString pattern = name.normalized(QString::NormalizationForm_C);
+    for (QChar& c : pattern) {
+        if (c.unicode() > 127 || c == u'?') {
+            c = u'*';
+        }
+    }
+    matches = dir.entryList({ pattern }, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
+    if (matches.size() == 1) {
+        return matches.front();
+    }
+
+    return QString();
+}
+
+//! the existing path which the given absolute path means (each directory and the file name are looked up),
+//! or the given path when there is none
+static QString existingFilePath(const QString& path)
 {
     if (QFileInfo::exists(path)) {
         return path;
     }
 
-    const QStringList reencoded = {
-        path.normalized(QString::NormalizationForm_C), // "ê" as one character...
-        path.normalized(QString::NormalizationForm_D), // ... or as "e" + a combining accent
-        QString::fromUtf8(path.toLatin1()),            // UTF-8 bytes read as Latin-1
-        QString::fromLocal8Bit(path.toLatin1())        // ANSI code page bytes read as Latin-1
-    };
-    for (const QString& candidate : reencoded) {
-        if (!candidate.contains(QChar::ReplacementCharacter) && QFileInfo::exists(candidate)) {
-            return candidate;
-        }
+    const QStringList parts = QDir::fromNativeSeparators(path).split(u'/');
+
+    //! NOTE: the root is kept as is: "C:", "" (Unix) or "//server/share" (network)
+    int first = 1;
+    QString current = parts.front();
+    if (parts.size() > 3 && parts.at(0).isEmpty() && parts.at(1).isEmpty()) {
+        current = "//" + parts.at(2) + "/" + parts.at(3);
+        first = 4;
     }
 
-    //! NOTE: last resort, the only file of the directory whose name matches with any non-ASCII character as a wildcard
-    const QFileInfo info(path);
-    QString pattern = info.fileName().normalized(QString::NormalizationForm_C);
-    bool hasWildcard = false;
-    for (QChar& c : pattern) {
-        if (c.unicode() > 127 || c == u'?') {
-            c = u'*';
-            hasWildcard = true;
+    for (int i = first; i < parts.size(); ++i) {
+        const QString& part = parts.at(i);
+        if (part.isEmpty()) {
+            continue;
         }
+
+        QString next = current + "/" + part;
+        if (!QFileInfo::exists(next)) {
+            const QString entry = matchingEntryName(QDir(current + "/"), part);
+            if (!entry.isEmpty()) {
+                next = current + "/" + entry;
+            } else if (i != parts.size() - 1) {
+                return path;
+            }
+            //! NOTE: else a file to create (e.g. to record into), in the found directory
+        }
+        current = next;
     }
 
-    if (hasWildcard) {
-        const QStringList matches = info.dir().entryList({ pattern }, QDir::Files);
-        if (matches.size() == 1) {
-            return info.dir().filePath(matches.front());
-        }
-    }
-
-    return path;
+    return current;
 }
 
 static bool isMpegAudioExtension(std::string extension)
@@ -771,10 +845,17 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
     muse::io::paths_t actualPaths;
     actualPaths.reserve(paths.size());
     for (const auto& givenPath : paths) {
-        io::path_t actualPath = fileSystem()->absoluteFilePath(givenPath);
+        //! NOTE: find the file even when the accents of its path were passed in another form or encoding
+        const QString givenAbsolutePath = QFileInfo(givenPath.toQString()).absoluteFilePath();
+        const QString existingPath = existingFilePath(givenAbsolutePath);
+        if (existingPath != givenAbsolutePath) {
+            LOGI() << "\"" << givenAbsolutePath << "\" found as \"" << existingPath << "\"";
+        }
+
+        io::path_t actualPath = fileSystem()->absoluteFilePath(io::path_t(existingPath));
         if (actualPath.empty() && quickEdit) {
             //! NOTE: the file to quick edit may not exist yet (see below)
-            actualPath = io::path_t(QFileInfo(givenPath.toQString()).absoluteFilePath());
+            actualPath = io::path_t(existingPath);
         }
         if (actualPath.empty()) {
             return make_ret(Ret::Code::UnknownError);
@@ -824,7 +905,6 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
 
     if (isQuickEdit) {
         LOGI() << "quick edit of " << actualPaths.front().toQString();
-        actualPaths.front() = muse::io::path_t(existingQuickEditPath(actualPaths.front().toQString()));
     }
 
     //! NOTE: the calling application may give a file to create (missing or empty, e.g. to record into it):
