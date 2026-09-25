@@ -1,6 +1,7 @@
 #include "projectactionscontroller.h"
 
 #include <QFile>
+#include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
@@ -176,11 +177,28 @@ static bool overwriteFileContents(const QString& fromPath, const QString& toPath
     return to.flush();
 }
 
+//! NOTE: an option of the quick edits: "--<name> <value>" on the command line, or an environment variable
+//! (also set by GuiApp for a quick edit handed off by another process)
+static QString quickEditOption(const QString& argName, const char* envName)
+{
+    const QStringList args = QCoreApplication::arguments();
+    const int index = args.indexOf(argName);
+    if (index >= 0 && index + 1 < args.size()) {
+        return args.at(index + 1);
+    }
+    return qEnvironmentVariable(envName);
+}
+
 //! NOTE: quick edit keeps a backup (original file + project) of each save, removed after this many days
 static constexpr int QUICK_EDIT_BACKUP_DAYS = 5;
 
 static QString quickEditBackupRoot()
 {
+    //! NOTE: a chosen directory (--backup-dir / AU_QUICK_EDIT_BACKUP_DIR), e.g. not cleaned up by Windows like the temp one
+    const QString configured = quickEditOption("--backup-dir", "AU_QUICK_EDIT_BACKUP_DIR");
+    if (!configured.isEmpty()) {
+        return configured;
+    }
     return QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation)).filePath("Audacity Quick Edit Backups");
 }
 
@@ -343,6 +361,37 @@ static muse::ValList mpegEncodingParameters(const MpegAudioInfo& info)
     }
 
     return { exportParameter(0, muse::Val(std::string("CBR"))), exportParameter(4, muse::Val(info.bitrateKbps)) };
+}
+
+struct RecordFormat {
+    std::string extension; // of the exporter
+    muse::ValList parameters;
+};
+
+//! NOTE: the format of new files (e.g. RCS Zetta recordings), from --record-format / AU_RECORD_FORMAT:
+//! "wav16", "wav24", "wav32f", "mp2-<kbps>" (MPEG-1 Layer II) or "mp3-<kbps>" (constant bitrate)
+static std::optional<RecordFormat> configuredRecordFormat()
+{
+    const QString spec = quickEditOption("--record-format", "AU_RECORD_FORMAT").trimmed().toLower();
+    if (spec.isEmpty()) {
+        return std::nullopt;
+    }
+
+    if (spec == "wav16" || spec == "wav24" || spec == "wav32f") {
+        const int subtype = spec == "wav24" ? SF_FORMAT_PCM_24 : (spec == "wav32f" ? SF_FORMAT_FLOAT : SF_FORMAT_PCM_16);
+        return RecordFormat { "wav", { exportParameter(0, muse::Val(SF_FORMAT_WAV)), exportParameter(SF_FORMAT_WAV, muse::Val(subtype)) } };
+    }
+
+    const int kbps = spec.section(u'-', 1).toInt();
+    if (spec.startsWith("mp2-") && kbps > 0) {
+        return RecordFormat { "mp2", mpegEncodingParameters(MpegAudioInfo { 2, true, kbps, false }) };
+    }
+    if (spec.startsWith("mp3-") && kbps > 0) {
+        return RecordFormat { "mp3", mpegEncodingParameters(MpegAudioInfo { 3, true, kbps, false }) };
+    }
+
+    LOGW() << "unknown record format: " << spec;
+    return std::nullopt;
 }
 
 //! NOTE: export parameters (see mod-pcm / mod-flac option ids) reproducing the encoding of the given audio file,
@@ -959,6 +1008,15 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
         ret = project->import(actualPaths);
     }
 
+    //! NOTE: a live recording still running is followed (its end is added as it is recorded), and its edit is saved
+    //! next to it: never over the live file, which the recording Audacity writes
+    if (ret && !isNewQuickEditFile && actualPaths.size() == 1 && LiveRecordFollower::isRunningLiveRecording(actualPaths.front())) {
+        m_liveRecordFollower = std::make_unique<LiveRecordFollower>(iocContext());
+        m_liveRecordFollower->start(project, actualPaths.front());
+        startQuickEdit(project, LiveRecordFollower::montagePath(actualPaths.front()), nullptr);
+        return ret;
+    }
+
     //! NOTE: only files which can be written back are quick edited, others open as a regular project
     if (ret && isQuickEdit && canQuickEdit(actualPaths.front())) {
         startQuickEdit(project, actualPaths.front(), lock);
@@ -1056,6 +1114,13 @@ std::string ProjectActionsController::quickEditFormat(const muse::io::path_t& so
         return format;
     }
 
+    const bool isNewFile = QFileInfo(sourcePath.toQString()).size() == 0;
+    if (isNewFile) {
+        if (const std::optional<RecordFormat> recordFormat = configuredRecordFormat()) {
+            return formatNameForExtension(recordFormat->extension);
+        }
+    }
+
     const std::string extension = io::suffix(sourcePath);
     format = formatNameForExtension(extension);
     if (!format.empty()) {
@@ -1063,7 +1128,7 @@ std::string ProjectActionsController::quickEditFormat(const muse::io::path_t& so
     }
 
     //! NOTE: a new (empty) file to record into: MP2 for MPEG extensions, WAV otherwise
-    if (QFileInfo(sourcePath.toQString()).size() == 0) {
+    if (isNewFile) {
         return formatNameForExtension(isMpegAudioExtension(extension) ? "mp2" : "wav");
     }
 
@@ -1166,6 +1231,7 @@ bool ProjectActionsController::closeOpenedProject(const bool quitApp)
 
         //! NOTE: finish the live recording file while the project still exists
         m_liveRecordMirror.reset();
+        m_liveRecordFollower.reset();
         m_quickEditHandoffs.erase(project.get());
 
         project->close();
@@ -1569,7 +1635,12 @@ bool ProjectActionsController::exportQuickEditToSource(const IAudacityProjectPtr
 
     //! NOTE: keep the source bit depth / encoding when it can be read (WAV, AIFF, FLAC, MP2, MP3);
     //! other formats (MP3, OGG...) use the user's export preferences
-    const muse::ValList encodingParameters = mpegAudio ? mpegEncodingParameters(*mpegAudio) : sourceEncodingParameters(sourcePath);
+    muse::ValList encodingParameters = mpegAudio ? mpegEncodingParameters(*mpegAudio) : sourceEncodingParameters(sourcePath);
+    if (isNewFile) {
+        if (const std::optional<RecordFormat> recordFormat = configuredRecordFormat()) {
+            encodingParameters = recordFormat->parameters;
+        }
+    }
     if (!encodingParameters.empty()) {
         options[importexport::IExporter::OptionKey::Parameters] = muse::Val(encodingParameters);
     }

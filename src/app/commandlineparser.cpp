@@ -82,6 +82,12 @@ void CommandLineParser::init()
                                           "With --quick-edit of a new file: also write the recording, while it runs, to a"
                                           " growing WAV file of this (shared) directory. Or set AU_LIVE_RECORD_DIR",
                                           "directory"));
+    m_parser.addOption(QCommandLineOption("record-format",
+                                          "With --quick-edit of a new file: its format, wav16 / wav24 / wav32f / mp2-<kbps> /"
+                                          " mp3-<kbps>. Or set AU_RECORD_FORMAT", "format"));
+    m_parser.addOption(QCommandLineOption("backup-dir",
+                                          "With --quick-edit: where the backups of the edited files are kept (5 days)."
+                                          " Or set AU_QUICK_EDIT_BACKUP_DIR", "directory"));
     m_parser.addOption(internalCommandLineOption("quick-edit-token", "Quick edit handed off by another process", "token"));
     m_parser.addOption(internalCommandLineOption("project-display-name-override", "Display name override", "name"));
 
@@ -231,6 +237,14 @@ void CommandLineParser::parse(int argc, char** argv)
 
     if (m_parser.isSet("live-dir")) {
         m_options->startup.liveRecordDir = m_parser.value("live-dir");
+    }
+
+    if (m_parser.isSet("record-format")) {
+        m_options->startup.recordFormat = m_parser.value("record-format");
+    }
+
+    if (m_parser.isSet("backup-dir")) {
+        m_options->startup.backupDir = m_parser.value("backup-dir");
     }
 
     if (m_parser.isSet("F")) {

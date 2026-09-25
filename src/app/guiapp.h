@@ -33,7 +33,7 @@ private:
     QString mainWindowQmlPath(const QString& platform) const override;
     void showContextSplash(const muse::modularity::ContextPtr& ctxId) override;
     void doSetup(const std::shared_ptr<muse::CmdOptions>& options) override;
-    static void setLiveRecordDir(const QString& dir);
+    static void setQuickEditEnvironment(const AudacityCmdOptions& options);
     void doStartupScenario(const muse::modularity::ContextPtr& ctxId) override;
     void applyCommandLineOptions(const std::shared_ptr<muse::CmdOptions>& options) override;
 

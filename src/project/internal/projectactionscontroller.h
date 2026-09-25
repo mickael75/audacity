@@ -38,6 +38,7 @@
 #include "project/iprojectfilescontroller.h"
 #include "project/iaudacityproject.h"
 #include "liverecordmirror.h"
+#include "liverecordfollower.h"
 #include "multiwindows/imultiwindowsprovider.h"
 
 namespace au::project {
@@ -185,6 +186,7 @@ private:
     //! of prompting for a project save location
     std::map<IAudacityProject*, QuickEditSource> m_quickEditSourceFiles;
     std::unique_ptr<LiveRecordMirror> m_liveRecordMirror;
+    std::unique_ptr<LiveRecordFollower> m_liveRecordFollower;
 
     //! NOTE: a quick edit handed off by another Audacity process (which the launching application waits for):
     //! "<temp>/audacity-quick-edit-<token>.lock" is held while the project is open, "<...>.done" written at its end

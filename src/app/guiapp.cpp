@@ -95,7 +95,7 @@ void GuiApp::doStartupScenario(const muse::modularity::ContextPtr& ctxId)
     startupScenario->setRemoveMediaFilesAfterImport(options->startup.removeMediaFilesAfterImport);
     startupScenario->setQuickEditMode(options->startup.quickEdit);
     startupScenario->setQuickEditToken(options->startup.quickEditToken);
-    setLiveRecordDir(options->startup.liveRecordDir);
+    setQuickEditEnvironment(*options);
     if (options->startup.startupUrl.has_value()) {
         startupScenario->setStartupUrl(options->startup.startupUrl.value());
     }
@@ -152,12 +152,18 @@ void GuiApp::doSetup(const std::shared_ptr<muse::CmdOptions>& options)
     });
 }
 
-//! NOTE: read by project::LiveRecordMirror, for the quick edits of this process (a handed off quick edit may give it)
-void GuiApp::setLiveRecordDir(const QString& dir)
+//! NOTE: the quick edit options are read from the arguments or the environment by the project module
+//! (see LiveRecordMirror, ProjectActionsController): a quick edit handed off by another process gives them this way
+void GuiApp::setQuickEditEnvironment(const AudacityCmdOptions& options)
 {
-    if (!dir.isEmpty()) {
-        qputenv("AU_LIVE_RECORD_DIR", dir.toLocal8Bit());
-    }
+    auto set = [](const char* name, const QString& value) {
+        if (!value.isEmpty()) {
+            qputenv(name, value.toLocal8Bit());
+        }
+    };
+    set("AU_LIVE_RECORD_DIR", options.startup.liveRecordDir);
+    set("AU_RECORD_FORMAT", options.startup.recordFormat);
+    set("AU_QUICK_EDIT_BACKUP_DIR", options.startup.backupDir);
 }
 
 void GuiApp::onSecondInstanceArgs(const QStringList& args)
@@ -168,7 +174,7 @@ void GuiApp::onSecondInstanceArgs(const QStringList& args)
     {
         const auto quickEditOptions = std::dynamic_pointer_cast<AudacityCmdOptions>(makeContextOptions(muse::StringList(args)));
         if (quickEditOptions && quickEditOptions->startup.quickEdit && !quickEditOptions->startup.mediaFiles.empty()) {
-            setLiveRecordDir(quickEditOptions->startup.liveRecordDir);
+            setQuickEditEnvironment(*quickEditOptions);
             auto windowsProvider = muse::modularity::globalIoc()->resolve<muse::mi::IMultiWindowsProvider>("app");
             if (windowsProvider) {
                 windowsProvider->openNewWindow(args);

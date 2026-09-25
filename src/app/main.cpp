@@ -241,6 +241,12 @@ int main(int argc, char** argv)
                 if (!startup.liveRecordDir.isEmpty()) {
                     forwardedArgs << "--live-dir" << startup.liveRecordDir;
                 }
+                if (!startup.recordFormat.isEmpty()) {
+                    forwardedArgs << "--record-format" << startup.recordFormat;
+                }
+                if (!startup.backupDir.isEmpty()) {
+                    forwardedArgs << "--backup-dir" << startup.backupDir;
+                }
                 for (const auto& file : startup.mediaFiles) {
                     forwardedArgs << file.toQString();
                 }
