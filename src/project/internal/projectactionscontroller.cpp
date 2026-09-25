@@ -587,7 +587,9 @@ bool ProjectActionsController::canReceiveAction(const muse::actions::ActionCode&
         }
     }
 
-    if (muse::contains(prohibitedWhileRecording(), code) && recordController()->isRecording()) {
+    //! NOTE: saving a quick edit while recording stops the recording first (see saveProject)
+    if (muse::contains(prohibitedWhileRecording(), code) && recordController()->isRecording()
+        && !(code == "file-save" && isQuickEditProject(project))) {
         return false;
     }
 
@@ -912,10 +914,8 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
     const bool isNewQuickEditFile = isQuickEdit && QFileInfo(actualPaths.front().toQString()).size() == 0;
     if (isNewQuickEditFile) {
         //! NOTE: tell it, a wrong path would otherwise silently open an empty project
-        const bool exists = QFileInfo::exists(actualPaths.front().toQString());
-        toastService()->show(muse::trc("project", "New file"),
-                             (exists ? muse::mtrc("project", "\"%1\" is empty: record or add audio, then save.")
-                              : muse::mtrc("project", "\"%1\" doesn't exist: it will be created when saving."))
+        toastService()->show(muse::trc("project", "Recording"),
+                             muse::mtrc("project", "Recording into \"%1\". Save (Ctrl+S) to stop, write the file and close.")
                              .arg(actualPaths.front().toString()).toStdString(),
                              muse::ui::IconCode::Code::WARNING, true /*dismissable*/, {});
     } else {
@@ -925,6 +925,14 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
     //! NOTE: only files which can be written back are quick edited, others open as a regular project
     if (ret && isQuickEdit && canQuickEdit(actualPaths.front())) {
         startQuickEdit(project, actualPaths.front());
+
+        //! NOTE: a new (empty) file is given to record into (e.g. RCS Zetta "record"): start recording right away,
+        //! once the project page is ready
+        if (isNewQuickEditFile) {
+            muse::async::Async::call(this, [this]() {
+                dispatcher()->dispatch("record-on-new-track");
+            });
+        }
     }
 
     return ret;
@@ -1580,6 +1588,10 @@ bool ProjectActionsController::saveProject(SaveMode saveMode, SaveLocationType s
     IAudacityProjectPtr project = currentProject();
 
     if (saveMode == SaveMode::Save && isQuickEditProject(project)) {
+        if (recordController()->isRecording()) {
+            dispatcher()->dispatch(muse::actions::ActionQuery("action://record/stop"));
+        }
+
         const bool exported = exportQuickEditToSource(project);
 
         //! NOTE: the application which launched the quick edit takes the file back once Audacity exits,
