@@ -180,6 +180,45 @@ static QString quickEditBackupRoot()
     return QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation)).filePath("Audacity Quick Edit Backups");
 }
 
+//! NOTE: the calling application may pass a path with non-ASCII characters in another encoding
+//! (e.g. "Forêt" received as "ForÃªt" or "For?t"): find the existing file it means
+static QString existingQuickEditPath(const QString& path)
+{
+    if (QFileInfo::exists(path)) {
+        return path;
+    }
+
+    const QStringList reencoded = {
+        QString::fromUtf8(path.toLatin1()),     // UTF-8 bytes read as Latin-1
+        QString::fromLocal8Bit(path.toLatin1()) // ANSI code page bytes read as Latin-1
+    };
+    for (const QString& candidate : reencoded) {
+        if (!candidate.contains(QChar::ReplacementCharacter) && QFileInfo::exists(candidate)) {
+            return candidate;
+        }
+    }
+
+    //! NOTE: last resort, the only file of the directory whose name matches with any non-ASCII character as a wildcard
+    const QFileInfo info(path);
+    QString pattern = info.fileName();
+    bool hasWildcard = false;
+    for (QChar& c : pattern) {
+        if (c.unicode() > 127 || c == u'?') {
+            c = u'*';
+            hasWildcard = true;
+        }
+    }
+
+    if (hasWildcard) {
+        const QStringList matches = info.dir().entryList({ pattern }, QDir::Files);
+        if (matches.size() == 1) {
+            return info.dir().filePath(matches.front());
+        }
+    }
+
+    return path;
+}
+
 static bool isMpegAudioExtension(std::string extension)
 {
     std::transform(extension.begin(), extension.end(), extension.begin(),
@@ -770,10 +809,23 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
         return ret;
     }
 
+    if (isQuickEdit) {
+        LOGI() << "quick edit of " << actualPaths.front().toQString();
+        actualPaths.front() = muse::io::path_t(existingQuickEditPath(actualPaths.front().toQString()));
+    }
+
     //! NOTE: the calling application may give a file to create (missing or empty, e.g. to record into it):
     //! quick edit then starts with an empty project, which is saved to that file
     const bool isNewQuickEditFile = isQuickEdit && QFileInfo(actualPaths.front().toQString()).size() == 0;
-    if (!isNewQuickEditFile) {
+    if (isNewQuickEditFile) {
+        //! NOTE: tell it, a wrong path would otherwise silently open an empty project
+        const bool exists = QFileInfo::exists(actualPaths.front().toQString());
+        toastService()->show(muse::trc("project", "New file"),
+                             (exists ? muse::mtrc("project", "\"%1\" is empty: record or add audio, then save.")
+                              : muse::mtrc("project", "\"%1\" doesn't exist: it will be created when saving."))
+                             .arg(actualPaths.front().toString()).toStdString(),
+                             muse::ui::IconCode::Code::WARNING, true /*dismissable*/, {});
+    } else {
         ret = project->import(actualPaths);
     }
 
