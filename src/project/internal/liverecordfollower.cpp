@@ -6,6 +6,7 @@
 
 #include <vector>
 
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
