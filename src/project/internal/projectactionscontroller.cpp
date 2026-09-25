@@ -69,6 +69,7 @@ struct MpegAudioInfo {
     int layer = 2; // 2: MP2, 3: MP3
     bool mpeg1 = true;
     int bitrateKbps = 0;
+    bool variableBitrate = false; // a "Xing" header in the first frame
 };
 
 //! NOTE: some broadcast systems (e.g. RCS Zetta) store MPEG audio with another extension (.mpg) or none at all:
@@ -130,7 +131,7 @@ static std::optional<MpegAudioInfo> mpegAudioInfo(const muse::io::path_t& path)
             return 0;
         }
 
-        info = { layer, mpeg1, kbps };
+        info = { layer, mpeg1, kbps, false };
         //! NOTE: MPEG-2 Layer III frames hold half as many samples
         const int samplesFactor = (layer == 3 && !mpeg1) ? 72000 : 144000;
         return samplesFactor * kbps / rate + ((bytes[pos + 2] >> 1) & 0x1);
@@ -145,6 +146,7 @@ static std::optional<MpegAudioInfo> mpegAudioInfo(const muse::io::path_t& path)
 
         MpegAudioInfo next;
         if (frameAt(pos + length, next) > 0 && next.mpeg1 == info.mpeg1 && next.layer == info.layer) {
+            info.variableBitrate = data.mid(pos, length).contains("Xing");
             return info;
         }
     }
@@ -189,8 +191,10 @@ static QString existingQuickEditPath(const QString& path)
     }
 
     const QStringList reencoded = {
-        QString::fromUtf8(path.toLatin1()),     // UTF-8 bytes read as Latin-1
-        QString::fromLocal8Bit(path.toLatin1()) // ANSI code page bytes read as Latin-1
+        path.normalized(QString::NormalizationForm_C), // "ê" as one character...
+        path.normalized(QString::NormalizationForm_D), // ... or as "e" + a combining accent
+        QString::fromUtf8(path.toLatin1()),            // UTF-8 bytes read as Latin-1
+        QString::fromLocal8Bit(path.toLatin1())        // ANSI code page bytes read as Latin-1
     };
     for (const QString& candidate : reencoded) {
         if (!candidate.contains(QChar::ReplacementCharacter) && QFileInfo::exists(candidate)) {
@@ -200,7 +204,7 @@ static QString existingQuickEditPath(const QString& path)
 
     //! NOTE: last resort, the only file of the directory whose name matches with any non-ASCII character as a wildcard
     const QFileInfo info(path);
-    QString pattern = info.fileName();
+    QString pattern = info.fileName().normalized(QString::NormalizationForm_C);
     bool hasWildcard = false;
     for (QChar& c : pattern) {
         if (c.unicode() > 127 || c == u'?') {
@@ -237,11 +241,20 @@ static void purgeQuickEditBackups()
     }
 }
 
-//! NOTE: mod-mp2: option 0 is the MPEG version (1: MPEG-1), options 1 / 2 the MPEG-1 / MPEG-2 bitrate
-static muse::ValList mp2EncodingParameters(const MpegAudioInfo& info)
+//! NOTE: mod-mp2: option 0 is the MPEG version (1: MPEG-1), options 1 / 2 the MPEG-1 / MPEG-2 bitrate;
+//! mod-mp3: option 0 is the bitrate mode, option 4 the constant bitrate (a variable bitrate uses the preferences)
+static muse::ValList mpegEncodingParameters(const MpegAudioInfo& info)
 {
-    return { exportParameter(0, muse::Val(info.mpeg1 ? 1 : 0)),
-             exportParameter(info.mpeg1 ? 1 : 2, muse::Val(info.bitrateKbps)) };
+    if (info.layer == 2) {
+        return { exportParameter(0, muse::Val(info.mpeg1 ? 1 : 0)),
+                 exportParameter(info.mpeg1 ? 1 : 2, muse::Val(info.bitrateKbps)) };
+    }
+
+    if (info.variableBitrate) {
+        return {};
+    }
+
+    return { exportParameter(0, muse::Val(std::string("CBR"))), exportParameter(4, muse::Val(info.bitrateKbps)) };
 }
 
 //! NOTE: export parameters (see mod-pcm / mod-flac option ids) reproducing the encoding of the given audio file,
@@ -1325,11 +1338,11 @@ bool ProjectActionsController::exportQuickEditToSource(const IAudacityProjectPtr
     const bool isNewFile = QFileInfo(sourcePath.toQString()).size() == 0;
     const std::string format = quickEditFormat(sourcePath);
 
-    //! NOTE: MP2 keeps the source MPEG version and bitrate
+    //! NOTE: MP2 / MP3 keep the source MPEG version and bitrate
     std::optional<MpegAudioInfo> mpegAudio;
-    if (!format.empty() && format == formatNameForExtension("mp2")) {
+    if (!format.empty()) {
         mpegAudio = mpegAudioInfo(sourcePath);
-        if (mpegAudio && mpegAudio->layer != 2) {
+        if (mpegAudio && format != formatNameForExtension(mpegAudio->layer == 2 ? "mp2" : "mp3")) {
             mpegAudio.reset();
         }
     }
@@ -1389,9 +1402,9 @@ bool ProjectActionsController::exportQuickEditToSource(const IAudacityProjectPtr
         options[importexport::IExporter::OptionKey::ExportSampleRate] = muse::Val(static_cast<int>(rate));
     }
 
-    //! NOTE: keep the source bit depth / encoding when it can be read (WAV, AIFF, FLAC, MP2);
+    //! NOTE: keep the source bit depth / encoding when it can be read (WAV, AIFF, FLAC, MP2, MP3);
     //! other formats (MP3, OGG...) use the user's export preferences
-    const muse::ValList encodingParameters = mpegAudio ? mp2EncodingParameters(*mpegAudio) : sourceEncodingParameters(sourcePath);
+    const muse::ValList encodingParameters = mpegAudio ? mpegEncodingParameters(*mpegAudio) : sourceEncodingParameters(sourcePath);
     if (!encodingParameters.empty()) {
         options[importexport::IExporter::OptionKey::Parameters] = muse::Val(encodingParameters);
     }
