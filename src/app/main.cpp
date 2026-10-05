@@ -17,6 +17,7 @@
 #include "appfactory.h"
 #include "commandlineparser.h"
 #include "log.h"
+#include "project/internal/liverecordsession.h"
 
 #include "framework/multiwindows/singleinstance.h"
 
@@ -226,6 +227,18 @@ int main(int argc, char** argv)
     if (commandLineParser.runMode() == muse::IApplication::RunMode::AudioPluginRegistration) {
         qApplication = new QCoreApplication(argcFinal, argvFinal);
     } else {
+        const auto& startupOptions = commandLineParser.options()->startup;
+        bool liveSession = startupOptions.quickEdit
+                           && (!startupOptions.liveRecordDir.isEmpty() || !qEnvironmentVariableIsEmpty("AU_LIVE_RECORD_DIR"));
+        for (const auto& file : startupOptions.mediaFiles) {
+            au::project::LiveRecordSession::State state;
+            QString error;
+            liveSession = liveSession || au::project::LiveRecordSession::readState(file.toQString(), state, error);
+        }
+        // Separate audio engines let an editor audition while another process captures.
+        if (startupOptions.newInstance || liveSession) {
+            qputenv("AU_ALLOW_MULTIPLE_PROCESSES", "1");
+        }
         if (!qEnvironmentVariableIsSet("AU_ALLOW_MULTIPLE_PROCESSES")) {
             const auto& startup = commandLineParser.options()->startup;
             const bool quickEdit = startup.quickEdit && !startup.mediaFiles.empty();

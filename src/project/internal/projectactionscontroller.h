@@ -5,6 +5,8 @@
 #include <memory>
 
 #include <QLockFile>
+#include <QTimer>
+#include <QElapsedTimer>
 
 #include "framework/global/async/asyncable.h"
 #include "framework/global/modularity/ioc.h"
@@ -26,6 +28,7 @@
 #include "trackedit/iprojecthistory.h"
 #include "trackedit/iselectioncontroller.h"
 #include "record/irecordcontroller.h"
+#include "audio/iaudioengine.h"
 #include "importexport/export/internal/exportconfiguration.h"
 #include "importexport/export/iexporter.h"
 #include "importexport/import/iimporter.h"
@@ -47,6 +50,7 @@ class ProjectActionsController : public IProjectFilesController, public muse::ac
 {
     muse::GlobalInject<muse::IApplication> application;
     muse::GlobalInject<IProjectConfiguration> configuration;
+    muse::GlobalInject<audio::IAudioEngine> audioEngine;
     muse::GlobalInject<muse::io::IFileSystem> fileSystem;
     muse::GlobalInject<importexport::ExportConfiguration> exportConfiguration;
     muse::GlobalInject<muse::IPlatformInteractive> platformInteractive;
@@ -135,7 +139,17 @@ private:
     void redo();
 
     bool isQuickEditProject(const IAudacityProjectPtr& project) const;
-    bool exportQuickEditToSource(const IAudacityProjectPtr& project);
+    bool exportQuickEditToSource(const IAudacityProjectPtr& project, const IAudacityProjectPtr& renderedProject = nullptr);
+    bool exportQuickEditAudio(const IAudacityProjectPtr& project, const muse::io::path_t& sourcePath,
+                              bool askSelection, bool renderWav = false,
+                              const std::string& newFileFormat = {}, const muse::ValList& newFileEncoding = {});
+    void finishLiveMontage();
+    void openLiveMontage();
+    bool openLiveEditor(const QString& wavPath, const QString& token = {});
+    void cancelLiveSession();
+    void pollLiveSession();
+    void closeSavedWindow();
+    IAudacityProjectPtr loadLiveMontage(const QString& path);
     std::string formatNameForExtension(const std::string& extension) const;
     bool canQuickEdit(const muse::io::path_t& sourcePath) const;
     std::string formatNameForContents(const muse::io::path_t& path) const;
@@ -176,6 +190,8 @@ private:
         bool upToDate = true;
         //! NOTE: held while the file is quick edited, to know when another Audacity process edits it too
         std::shared_ptr<QLockFile> lock;
+        std::string newFileFormat;
+        muse::ValList newFileEncoding;
     };
 
     void startQuickEdit(const IAudacityProjectPtr& project, const muse::io::path_t& sourcePath, std::shared_ptr<QLockFile> lock);
@@ -187,6 +203,15 @@ private:
     std::map<IAudacityProject*, QuickEditSource> m_quickEditSourceFiles;
     std::unique_ptr<LiveRecordMirror> m_liveRecordMirror;
     std::unique_ptr<LiveRecordFollower> m_liveRecordFollower;
+    QTimer m_liveSessionTimer;
+    QTimer m_liveOpenTimer;
+    QElapsedTimer m_liveOpenWait;
+    muse::io::paths_t m_pendingLivePaths;
+    QString m_pendingLiveToken;
+    bool m_liveMontageSubmitted = false;
+    bool m_liveRecordPublished = false;
+    bool m_liveRecordAcknowledged = false;
+    bool m_liveSessionBusy = false;
 
     //! NOTE: a quick edit handed off by another Audacity process (which the launching application waits for):
     //! "<temp>/audacity-quick-edit-<token>.lock" is held while the project is open, "<...>.done" written at its end

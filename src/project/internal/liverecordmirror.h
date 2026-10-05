@@ -5,9 +5,11 @@
 #pragma once
 
 #include <condition_variable>
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -20,6 +22,7 @@
 
 #include "record/irecord.h"
 #include "project/iaudacityproject.h"
+#include "liverecordsession.h"
 
 namespace au::project {
 //! NOTE: while a quick edit records (e.g. launched by RCS Zetta to record into a new file), copy the recorded audio
@@ -38,8 +41,12 @@ public:
     //! the shared directory, or an empty string when live recording isn't configured
     static QString liveRecordDir();
 
-    void start(const IAudacityProjectPtr& project, const muse::io::path_t& targetPath);
+    bool start(const IAudacityProjectPtr& project, const muse::io::path_t& targetPath);
     void finish();
+    void cancel();
+    QString wavPath() const { return m_wavPath; }
+    bool isFinished() const { return m_finished; }
+    bool hasFailed() const { return m_failed; }
 
 private:
     struct Chunk {
@@ -49,7 +56,7 @@ private:
     };
 
     void copyNewAudio(bool force);
-    void writeStatus(const QString& status) const;
+    bool writeStatus(const QString& status) const;
     void writerLoop(QString wavPath);
 
     IAudacityProject* m_project = nullptr;
@@ -57,11 +64,14 @@ private:
     QString m_wavPath;
     QString m_statusPath;
     QString m_startTime;
+    std::unique_ptr<LiveRecordSession> m_session;
     int64_t m_copiedSamples = 0;
     int m_channels = 0;
     int m_rate = 0;
     QElapsedTimer m_sinceLastCopy;
     bool m_started = false;
+    bool m_finished = false;
+    std::atomic<bool> m_failed { false };
 
     //! NOTE: the (network) file is written by its own thread, so that a slow share never blocks the recording
     std::thread m_writer;

@@ -36,6 +36,18 @@
 <context>
     <name>action</name>
     <message>
+        <source>Open live montage</source>
+        <translation>Ouvrir un montage live</translation>
+    </message>
+    <message>
+        <source>Montage finished</source>
+        <translation>Montage terminé</translation>
+    </message>
+    <message>
+        <source>Cancel live montage</source>
+        <translation>Annuler le montage live</translation>
+    </message>
+    <message>
         <location filename="../../src/appshell/internal/applicationuiactions.cpp" line="47"/>
         <source>Exit</source>
         <extracomment>Action title: shown as a menu item or a button label; keep it short</extracomment>
@@ -2063,6 +2075,18 @@
 </context>
 <context>
     <name>action_description</name>
+    <message>
+        <source>Open an independent montage editor for this live recording</source>
+        <translation>Ouvrir un éditeur de montage indépendant pour cet enregistrement live</translation>
+    </message>
+    <message>
+        <source>Freeze the final live montage and send it to Zetta after recording stops</source>
+        <translation>Figer le montage final et l'envoyer à Zetta après l'arrêt de l'enregistrement</translation>
+    </message>
+    <message>
+        <source>Stop the live session without publishing to Zetta</source>
+        <translation>Arrêter la session live sans publication vers Zetta</translation>
+    </message>
     <message>
         <location filename="../../src/appshell/internal/applicationuiactions.cpp" line="49"/>
         <source>Exit</source>

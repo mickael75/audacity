@@ -36,6 +36,7 @@ struct AudacityCmdOptions : public muse::CmdOptions {
         QString quickEditToken;
         //! NOTE: see project::LiveRecordMirror
         QString liveRecordDir;
+        bool newInstance = false;
         //! NOTE: format of new quick edit files, and directory of the quick edit backups
         QString recordFormat;
         QString backupDir;

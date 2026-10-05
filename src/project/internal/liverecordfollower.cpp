@@ -3,14 +3,14 @@
  * Audacity-CLA-applies
  */
 #include "liverecordfollower.h"
+#include "liverecordsession.h"
 
+#include <algorithm>
 #include <vector>
 
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QJsonDocument>
-#include <QJsonObject>
 
 #include "framework/global/log.h"
 #include "framework/global/translation.h"
@@ -39,27 +39,18 @@ LiveRecordFollower::~LiveRecordFollower()
     stop();
 }
 
-QString LiveRecordFollower::statusPath(const QString& wavPath)
-{
-    const QFileInfo info(wavPath);
-    return info.dir().filePath(info.completeBaseName() + ".json");
-}
-
 bool LiveRecordFollower::isRunningLiveRecording(const muse::io::path_t& wavPath)
 {
-    QFile status(statusPath(wavPath.toQString()));
-    if (!status.open(QIODevice::ReadOnly)) {
-        return false;
-    }
-
-    const QJsonObject json = QJsonDocument::fromJson(status.readAll()).object();
-    return json.value("status").toString() == "recording";
+    LiveRecordSession::State state;
+    QString error;
+    return LiveRecordSession::readState(wavPath.toQString(), state, error) && state == LiveRecordSession::State::Recording;
 }
 
-muse::io::path_t LiveRecordFollower::montagePath(const muse::io::path_t& wavPath)
+bool LiveRecordFollower::isLiveRecording(const muse::io::path_t& wavPath)
 {
-    const QFileInfo info(wavPath.toQString());
-    return muse::io::path_t(info.dir().filePath(info.completeBaseName() + "_montage.wav"));
+    LiveRecordSession::State state;
+    QString error;
+    return LiveRecordSession::readState(wavPath.toQString(), state, error);
 }
 
 bool LiveRecordFollower::readWavFormat(const QString& path, WavFormat& format)
@@ -87,55 +78,78 @@ bool LiveRecordFollower::readWavFormat(const QString& path, WavFormat& format)
         const QByteArray id = chunk.left(4);
         const quint32 size = le32(chunk, 4);
         if (id == "fmt ") {
+            if (size < 16 || size > 65536) {
+                return false;
+            }
             const QByteArray fmt = file.read(size);
-            if (fmt.size() < 16) {
+            if (fmt.size() != size || le16(fmt, 0) != 1) {
                 return false;
             }
             format.channels = le16(fmt, 2);
             format.bitsPerSample = le16(fmt, 14);
+            const quint32 sampleRate = le32(fmt, 4);
+            if (sampleRate == 0 || sampleRate > 768000) {
+                return false;
+            }
+            format.sampleRate = int(sampleRate);
             if (size % 2) {
                 file.read(1);
             }
         } else if (id == "data") {
             format.dataOffset = file.pos();
-            return format.channels > 0 && (format.bitsPerSample == 16 || format.bitsPerSample == 24);
+            format.dataBytes = size;
+            return format.channels > 0 && format.channels <= 2 && (format.bitsPerSample == 16 || format.bitsPerSample == 24);
         } else if (!file.seek(file.pos() + size + (size % 2))) {
             return false;
         }
     }
 }
 
-void LiveRecordFollower::start(const IAudacityProjectPtr& project, const muse::io::path_t& wavPath)
+bool LiveRecordFollower::start(const IAudacityProjectPtr& project, const muse::io::path_t& wavPath,
+                               const muse::io::path_t& draftPath)
 {
     if (!project || !readWavFormat(wavPath.toQString(), m_format)) {
-        LOGW() << "live recording: can't follow " << wavPath.toQString();
-        return;
+        reportError("Cannot follow the live WAV: " + wavPath.toQString());
+        return false;
     }
 
     auto* au3Project = reinterpret_cast<au::au3::Au3Project*>(project->au3ProjectPtr());
     auto tracks = au::au3::Au3TrackList::Get(*au3Project).Any<au::au3::Au3WaveTrack>();
     if (tracks.begin() == tracks.end()) {
-        return;
+        reportError("The live recording has no audio track.");
+        return false;
     }
 
     //! NOTE: the import read the audio written so far
     const auto clip = (*tracks.begin())->GetRightmostClip();
     if (!clip || static_cast<int>(clip->NChannels()) != m_format.channels) {
-        return;
+        reportError("The live recording has no compatible audio clip.");
+        return false;
     }
 
     m_project = project.get();
     m_wavPath = wavPath.toQString();
     m_framesRead = clip->GetSequenceSamplesCount().as_long_long();
+    m_sourceTrackId = (*tracks.begin())->GetId();
+    m_sourceClipId = clip->GetId();
+
+    // Keep an untouched live source and give the editor an independent working copy.
+    auto copy = (*tracks.begin())->Duplicate();
+    au::au3::Au3TrackList::Get(*au3Project).Add(copy);
+    (*tracks.begin())->SetMute(true);
+    project->trackeditProject()->reload();
+    projectHistory()->modifyState();
 
     toastService()->show(muse::trc("project", "Live recording"),
                          muse::mtrc("project", "Following the live recording \"%1\": its end is added as it is recorded. "
-                                               "Edit a copy of it; saving writes \"%2\".")
+                                               "The muted source grows; edit the working copy. Save writes \"%2\". "
+                                               "Use File > Montage finished to send the frozen edit to Zetta.")
                          .arg(muse::String::fromQString(QFileInfo(m_wavPath).fileName()))
-                         .arg(montagePath(wavPath).toString()).toStdString(),
+                         .arg(draftPath.toString()).toStdString(),
                          muse::ui::IconCode::Code::WARNING, true /*dismissable*/, {});
 
     m_timer.start();
+    return true;
 }
 
 void LiveRecordFollower::stop()
@@ -150,27 +164,65 @@ void LiveRecordFollower::follow()
         return;
     }
 
-    //! NOTE: check the status first: once done, the last audio is read, then the following stops
-    const bool done = !isRunningLiveRecording(muse::io::path_t(m_wavPath));
+    LiveRecordSession::State state;
+    QString error;
+    if (!LiveRecordSession::readState(m_wavPath, state, error)) {
+        reportError(error);
+        return;
+    }
+    if (state == LiveRecordSession::State::Failed) {
+        reportError("The live recording failed. It cannot be published to Zetta.");
+        return;
+    }
+    const bool done = state == LiveRecordSession::State::Done;
 
     QFile file(m_wavPath);
     if (!file.open(QIODevice::ReadOnly)) {
+        reportError(m_wavPath + ": " + file.errorString());
         return;
     }
 
+    WavFormat currentFormat;
+    if (!readWavFormat(m_wavPath, currentFormat) || currentFormat.channels != m_format.channels
+        || currentFormat.bitsPerSample != m_format.bitsPerSample || currentFormat.dataOffset != m_format.dataOffset
+        || currentFormat.sampleRate != m_format.sampleRate) {
+        reportError("The live WAV format changed or could not be read.");
+        return;
+    }
     const int bytesPerSample = m_format.bitsPerSample / 8;
     const int blockAlign = bytesPerSample * m_format.channels;
-    const int64_t availableFrames = (file.size() - m_format.dataOffset) / blockAlign;
+    if (done && file.size() < m_format.dataOffset + currentFormat.dataBytes) {
+        reportError("The completed live recording is incomplete.");
+        return;
+    }
+    const int64_t availableFrames = std::min<qint64>(file.size() - m_format.dataOffset, currentFormat.dataBytes) / blockAlign;
     const int64_t newFrames = availableFrames - m_framesRead;
+    if (newFrames < 0) {
+        reportError("The live recording was truncated.");
+        return;
+    }
 
-    if (newFrames > 0 && file.seek(m_format.dataOffset + m_framesRead * blockAlign)) {
-        const QByteArray data = file.read(newFrames * blockAlign);
+    if (newFrames > 0) {
+        if (!file.seek(m_format.dataOffset + m_framesRead * blockAlign)) {
+            reportError(file.errorString());
+            return;
+        }
+        const int64_t framesToRead = std::min<int64_t>(newFrames, int64_t(m_format.sampleRate) * 4);
+        const QByteArray data = file.read(framesToRead * blockAlign);
+        if (data.size() != framesToRead * blockAlign) {
+            reportError("Cannot read the committed live audio: " + file.errorString());
+            return;
+        }
         const int64_t frames = data.size() / blockAlign;
 
         auto* au3Project = reinterpret_cast<au::au3::Au3Project*>(m_project->au3ProjectPtr());
-        auto tracks = au::au3::Au3TrackList::Get(*au3Project).Any<au::au3::Au3WaveTrack>();
-        au::au3::Au3WaveTrack* track = tracks.begin() != tracks.end() ? *tracks.begin() : nullptr;
-        const auto clip = track ? track->GetRightmostClip() : nullptr;
+        auto* track = au::au3::DomAccessor::findWaveTrack(*au3Project, au::au3::Au3TrackId(m_sourceTrackId));
+        const auto clip = track ? au::au3::DomAccessor::findWaveClip(track, m_sourceClipId) : nullptr;
+        if (!clip || clip->GetSequenceSamplesCount().as_long_long() != m_framesRead || frames == 0
+            || static_cast<int>(clip->NChannels()) != m_format.channels) {
+            reportError("The live source was edited or removed. Edit the working copy, not the live source.");
+            return;
+        }
 
         if (clip && frames > 0 && static_cast<int>(clip->NChannels()) == m_format.channels) {
             std::vector<std::vector<float> > channels(m_format.channels, std::vector<float>(size_t(frames)));
@@ -204,11 +256,19 @@ void LiveRecordFollower::follow()
         }
     }
 
-    if (done) {
+    if (done && m_framesRead == availableFrames) {
         stop();
         toastService()->show(muse::trc("project", "Live recording"),
                              muse::mtrc("project", "The live recording \"%1\" is finished.")
                              .arg(muse::String::fromQString(QFileInfo(m_wavPath).fileName())).toStdString(),
                              muse::ui::IconCode::Code::TICK, true /*dismissable*/, {});
     }
+}
+
+void LiveRecordFollower::reportError(const QString& error)
+{
+    LOGE() << "live recording: " << error;
+    stop();
+    toastService()->show(muse::trc("project", "Live recording error"), error.toStdString(),
+                         muse::ui::IconCode::Code::WARNING, true /*dismissable*/, {});
 }

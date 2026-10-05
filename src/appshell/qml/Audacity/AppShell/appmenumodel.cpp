@@ -249,6 +249,9 @@ MenuItem* AppMenuModel::makeFileMenu()
         makeSeparator(),
 
         makeMenuItem("file-save"),
+        makeMenuItem("live-montage-finished"),
+        makeMenuItem("live-montage-open"),
+        makeMenuItem("live-session-cancel"),
         makeMenuItem("file-save-to-cloud"),
         makeMenuItem("file-save-as"),
         makeMenuItem("audacity://cloud/update-audio-preview"),

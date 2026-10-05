@@ -4,6 +4,8 @@
 
 #include "au3exporter.h"
 
+#include <algorithm>
+
 #include "framework/global/async/asyncable.h"
 
 #include "au3-basic-ui/BasicUI.h"
@@ -265,8 +267,21 @@ muse::Ret Au3Exporter::exportData(const muse::io::path_t& path, const Options& o
         //! NOTE: All selected audio is muted
         return muse::make_ret(muse::Ret::Code::InternalError, muse::trc("export", "All selected audio is muted"));
     }
+    if (options.count(OptionKey::UseAudibleTrackBounds) && options.at(OptionKey::UseAudibleTrackBounds).toBool()) {
+        // A muted live reference must not extend the montage with trailing silence.
+        m_t0 = 0.0;
+        m_t1 = 0.0;
+        for (const auto& track : exportedTracks) {
+            m_t1 = std::max(m_t1, track->GetEndTime());
+        }
+        if (m_t1 <= m_t0) {
+            return muse::make_ret(muse::Ret::Code::InternalError, muse::trc("export", "No audible audio to export"));
+        }
+    }
 
-    if (exportConfiguration()->trimBlankSpace()) {
+    const bool trimBlankSpace = options.count(OptionKey::TrimBlankSpace)
+                                ? options.at(OptionKey::TrimBlankSpace).toBool() : exportConfiguration()->trimBlankSpace();
+    if (trimBlankSpace) {
         const double firstClipStart = exportedTracks.min(&Track::GetStartTime);
         if (firstClipStart > m_t0 && firstClipStart < m_t1) {
             m_t0 = firstClipStart;

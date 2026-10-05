@@ -79,6 +79,8 @@ set(MODULE_SRC
     ${CMAKE_CURRENT_LIST_DIR}/internal/liverecordmirror.h
     ${CMAKE_CURRENT_LIST_DIR}/internal/liverecordfollower.cpp
     ${CMAKE_CURRENT_LIST_DIR}/internal/liverecordfollower.h
+    ${CMAKE_CURRENT_LIST_DIR}/internal/liverecordsession.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/internal/liverecordsession.h
     ${CMAKE_CURRENT_LIST_DIR}/internal/projectprovider.h
     ${CMAKE_CURRENT_LIST_DIR}/internal/recentfilescontroller.cpp
     ${CMAKE_CURRENT_LIST_DIR}/internal/recentfilescontroller.h

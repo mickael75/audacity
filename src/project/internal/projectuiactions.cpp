@@ -102,6 +102,24 @@ const UiActionList ProjectUiActions::m_actions = {
              //: Action description: shown as a tooltip; can be a full sentence
              TranslatableString("action_description", "Save")
              ),
+    UiAction("live-montage-finished",
+             au::context::UiCtxAny,
+             au::context::CTX_ANY,
+             TranslatableString("action", "Montage finished"),
+             TranslatableString("action_description", "Freeze the final live montage and send it to Zetta after recording stops")
+             ),
+    UiAction("live-montage-open",
+             au::context::UiCtxAny,
+             au::context::CTX_ANY,
+             TranslatableString("action", "Open live montage"),
+             TranslatableString("action_description", "Open an independent montage editor for this live recording")
+             ),
+    UiAction("live-session-cancel",
+             au::context::UiCtxAny,
+             au::context::CTX_ANY,
+             TranslatableString("action", "Cancel live montage"),
+             TranslatableString("action_description", "Stop the live session without publishing to Zetta")
+             ),
     UiAction("file-save-as",
              au::context::UiCtxAny,
              au::context::CTX_ANY,

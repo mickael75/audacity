@@ -72,6 +72,7 @@ void CommandLineParser::init()
                                           " (Windows debug builds only; significant runtime overhead)"));
 
     m_parser.addOption(QCommandLineOption("session-type", "Startup with given session type", "type"));
+    m_parser.addOption(QCommandLineOption("new-instance", "Open a separate Audacity process with its own audio engine"));
     m_parser.addOption(internalCommandLineOption("import-media-file", "Import media file on startup", "path"));
     m_parser.addOption(internalCommandLineOption("remove-media-after-import", "Remove imported media files after import"));
     m_parser.addOption(QCommandLineOption("quick-edit",
@@ -230,6 +231,7 @@ void CommandLineParser::parse(int argc, char** argv)
     if (m_parser.isSet("quick-edit")) {
         m_options->startup.quickEdit = true;
     }
+    m_options->startup.newInstance = m_parser.isSet("new-instance");
 
     if (m_parser.isSet("quick-edit-token")) {
         m_options->startup.quickEditToken = m_parser.value("quick-edit-token");

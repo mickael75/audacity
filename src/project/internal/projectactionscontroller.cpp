@@ -10,6 +10,8 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QWindow>
+#include <QProcess>
+#include <QUuid>
 
 #include <sndfile.h>
 
@@ -36,6 +38,9 @@
 #include "au3-project-file-io/ProjectFileIO.h"
 
 #include "audacityproject.h"
+#include "liverecordsession.h"
+#include "au3wrap/internal/domaccessor.h"
+#include "au3-wave-track/WaveTrack.h"
 #include "projecterrors.h"
 #include "project/types/projecttypes.h"
 
@@ -540,10 +545,33 @@ const std::unordered_set<muse::actions::ActionCode>& prohibitedWithoutAudio()
 ProjectActionsController::ProjectActionsController(muse::modularity::ContextPtr ctx)
     : muse::Contextable(ctx)
 {
+    m_liveSessionTimer.setInterval(1000);
+    QObject::connect(&m_liveSessionTimer, &QTimer::timeout, [this]() { pollLiveSession(); });
+    m_liveOpenTimer.setInterval(250);
+    QObject::connect(&m_liveOpenTimer, &QTimer::timeout, [this]() {
+        if (m_liveOpenWait.elapsed() > 30000) {
+            m_liveOpenTimer.stop();
+            m_pendingLivePaths.clear();
+            interactive()->error(muse::trc("project", "Live montage error"),
+                                 muse::trc("project", "No live audio became available within 30 seconds. "
+                                                     "Check the recording and the shared live directory, then reopen from Zetta."));
+            return;
+        }
+        const auto paths = m_pendingLivePaths;
+        const QString token = m_pendingLiveToken;
+        const Ret ret = processMediaFiles(paths, true, token);
+        if (!ret) {
+            m_liveOpenTimer.stop();
+            m_pendingLivePaths.clear();
+        }
+    });
 }
 
 void ProjectActionsController::init()
 {
+    dispatcher()->reg(this, "live-montage-finished", this, &ProjectActionsController::finishLiveMontage);
+    dispatcher()->reg(this, "live-montage-open", this, &ProjectActionsController::openLiveMontage);
+    dispatcher()->reg(this, "live-session-cancel", this, &ProjectActionsController::cancelLiveSession);
     dispatcher()->reg(this, "file-new", this, &ProjectActionsController::newProject);
     dispatcher()->reg(this, "file-open", this, &ProjectActionsController::open);
     dispatcher()->reg(this, "file-open-recent", this, &ProjectActionsController::open);
@@ -634,6 +662,16 @@ muse::async::Channel<muse::actions::ActionCodeList> ProjectActionsController::ac
 
 bool ProjectActionsController::canReceiveAction(const muse::actions::ActionCode& code) const
 {
+    if (code == "live-montage-finished") {
+        return m_liveRecordFollower && !m_liveMontageSubmitted && !m_isProjectSaving;
+    }
+    if (code == "live-session-cancel") {
+        return m_liveRecordMirror && !m_liveRecordPublished && !m_liveSessionBusy;
+    }
+    if (code == "live-montage-open") {
+        return m_liveRecordMirror && !m_liveRecordPublished && !m_liveRecordMirror->hasFailed()
+               && QFileInfo(m_liveRecordMirror->wavPath()).size() > 44;
+    }
     const IAudacityProjectPtr project = currentProject();
     if (!project) {
         return muse::contains(dontRequireOpenProject(), code);
@@ -907,6 +945,12 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
     if (paths.empty()) {
         return make_ret(Ret::Code::Cancel);
     }
+    if (m_liveOpenTimer.isActive() && paths != m_pendingLivePaths) {
+        interactive()->error(muse::trc("project", "Live montage error"),
+                             muse::trc("project", "This window is already waiting for a Zetta recording. "
+                                                 "Open the other emission in a separate Audacity process."));
+        return make_ret(Ret::Code::UnknownError);
+    }
 
     muse::io::paths_t actualPaths;
     actualPaths.reserve(paths.size());
@@ -934,6 +978,12 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
     //! open each extra file in its own quick edit window and keep the first one for this window
     if (quickEdit && actualPaths.size() > 1) {
         for (size_t i = 1; i < actualPaths.size(); ++i) {
+            if (!LiveRecordMirror::liveRecordDir().isEmpty()) {
+                if (!openLiveEditor(actualPaths.at(i).toQString())) {
+                    return make_ret(Ret::Code::UnknownError);
+                }
+                continue;
+            }
             QStringList args;
             args << "--session-type" << "start-with-new"
                  << "--import-media-file" << actualPaths.at(i).toQString()
@@ -941,6 +991,57 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
             multiwindowsProvider()->openNewWindow(args);
         }
         actualPaths.resize(1);
+    }
+
+    if (quickEdit && actualPaths.size() == 1 && !LiveRecordMirror::liveRecordDir().isEmpty()) {
+        const QString directory = LiveRecordMirror::liveRecordDir();
+        if (!QDir().mkpath(directory)) {
+            interactive()->error(muse::trc("project", "Live montage error"),
+                                 muse::trc("project", "The shared live directory is unavailable. Nothing was opened or recorded."));
+            return make_ret(Ret::Code::UnknownError);
+        }
+        QString wavPath;
+        QString error;
+        const auto lookup = LiveRecordSession::findTarget(directory, actualPaths.front().toQString(), wavPath, error);
+        if (lookup == LiveRecordSession::Lookup::Error) {
+            LOGE() << error;
+            interactive()->error(muse::trc("project", "Live montage error"), error.toStdString());
+            return make_ret(Ret::Code::UnknownError);
+        }
+        if (lookup == LiveRecordSession::Lookup::Pending) {
+            if (!m_liveOpenTimer.isActive()) {
+                m_liveOpenWait.start();
+                m_pendingLivePaths = { actualPaths.front() };
+                m_pendingLiveToken = quickEditToken;
+                m_liveOpenTimer.start();
+                toastService()->show(muse::trc("project", "Live recording"),
+                                     muse::trc("project", "Opening the matching Zetta recording as soon as its first audio is available."),
+                                     muse::ui::IconCode::Code::WARNING, true, {});
+            }
+            return make_ret(Ret::Code::Ok);
+        }
+        if (lookup == LiveRecordSession::Lookup::Found) {
+            LOGI() << "Zetta target " << actualPaths.front().toQString() << " follows live session " << wavPath;
+            actualPaths.front() = muse::io::path_t(wavPath);
+        } else if (m_liveOpenTimer.isActive()) {
+            interactive()->error(muse::trc("project", "Live montage error"),
+                                 muse::trc("project", "The recording was closed while waiting for its audio. "
+                                                     "No new recording was started."));
+            return make_ret(Ret::Code::UnknownError);
+        }
+    }
+    m_liveOpenTimer.stop();
+    m_pendingLivePaths.clear();
+
+    const bool needsOwnAudioEngine = LiveRecordFollower::isLiveRecording(actualPaths.front())
+                                    || (quickEdit && !LiveRecordMirror::liveRecordDir().isEmpty());
+    if (actualPaths.size() == 1 && needsOwnAudioEngine
+        && (globalContext()->currentProject() || audioEngine()->isBusy()
+            || !qEnvironmentVariableIsSet("AU_ALLOW_MULTIPLE_PROCESSES"))) {
+        if (!openLiveEditor(actualPaths.front().toQString(), quickEditToken)) {
+            return make_ret(Ret::Code::UnknownError);
+        }
+        return make_ret(Ret::Code::Ok);
     }
 
     const bool isQuickEdit = quickEdit;
@@ -953,6 +1054,9 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
         }
         if (isQuickEdit) {
             args << "--quick-edit";
+        }
+        if (!quickEditToken.isEmpty()) {
+            args << "--quick-edit-token" << quickEditToken;
         }
 
         multiwindowsProvider()->openNewWindow(args);
@@ -1010,10 +1114,17 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
 
     //! NOTE: a live recording still running is followed (its end is added as it is recorded), and its edit is saved
     //! next to it: never over the live file, which the recording Audacity writes
-    if (ret && !isNewQuickEditFile && actualPaths.size() == 1 && LiveRecordFollower::isRunningLiveRecording(actualPaths.front())) {
+    if (ret && !isNewQuickEditFile && actualPaths.size() == 1 && LiveRecordFollower::isLiveRecording(actualPaths.front())) {
+        const QFileInfo liveInfo(actualPaths.front().toQString());
+        const muse::io::path_t draftPath(liveInfo.dir().filePath(
+            liveInfo.completeBaseName() + "_montage_" + QUuid::createUuid().toString(QUuid::WithoutBraces) + ".wav"));
         m_liveRecordFollower = std::make_unique<LiveRecordFollower>(iocContext());
-        m_liveRecordFollower->start(project, actualPaths.front());
-        startQuickEdit(project, LiveRecordFollower::montagePath(actualPaths.front()), nullptr);
+        if (!m_liveRecordFollower->start(project, actualPaths.front(), draftPath)) {
+            m_liveRecordFollower.reset();
+            return make_ret(Ret::Code::UnknownError);
+        }
+        startQuickEdit(project, draftPath, nullptr);
+        m_actionEnabledChanged.send({ "live-montage-finished" });
         return ret;
     }
 
@@ -1027,13 +1138,29 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
             //! NOTE: with a live recording directory, the recording is also written there while it runs
             if (!LiveRecordMirror::liveRecordDir().isEmpty()) {
                 m_liveRecordMirror = std::make_unique<LiveRecordMirror>(iocContext());
+                if (!m_liveRecordMirror->start(project, actualPaths.front())) {
+                    m_liveRecordMirror.reset();
+                    m_quickEditSourceFiles.erase(project.get());
+                    project->close();
+                    globalContext()->setCurrentProject(nullptr);
+                    interactive()->error(muse::trc("project", "Live recording error"),
+                                         muse::trc("project", "The shared Zetta recording could not be reserved. "
+                                                             "It may already be recording on another workstation. "
+                                                             "Check the live directory and reopen from Zetta; no recording was started."));
+                    return make_ret(Ret::Code::UnknownError);
+                }
+                m_actionEnabledChanged.send({ "live-session-cancel" });
+                m_liveSessionTimer.start();
             }
 
-            const muse::io::path_t targetPath = actualPaths.front();
-            muse::async::Async::call(this, [this, project, targetPath]() {
+            muse::async::Async::call(this, [this, project]() {
                 dispatcher()->dispatch("record-on-new-track");
-                if (m_liveRecordMirror) {
-                    m_liveRecordMirror->start(project, targetPath);
+                if (m_liveRecordMirror && !recordController()->isRecording()) {
+                    m_liveSessionTimer.stop();
+                    m_liveRecordMirror->cancel();
+                    interactive()->error(muse::trc("project", "Live recording error"),
+                                         muse::trc("project", "Audio capture did not start. The live session was cancelled; "
+                                                             "check the input device before reopening from Zetta."));
                 }
             });
         }
@@ -1139,6 +1266,13 @@ void ProjectActionsController::startQuickEdit(const IAudacityProjectPtr& project
                                               std::shared_ptr<QLockFile> lock)
 {
     m_quickEditSourceFiles[project.get()] = QuickEditSource { sourcePath, true, std::move(lock) };
+    if (QFileInfo(sourcePath.toQString()).size() == 0) {
+        auto& source = m_quickEditSourceFiles.at(project.get());
+        source.newFileFormat = quickEditFormat(sourcePath);
+        if (const auto format = configuredRecordFormat()) {
+            source.newFileEncoding = format->parameters;
+        }
+    }
 
     //! NOTE: any edit after opening / exporting makes the source file outdated again
     IAudacityProject* rawProject = project.get();
@@ -1193,9 +1327,15 @@ bool ProjectActionsController::isFileSupported(const muse::io::path_t& path) con
 
 bool ProjectActionsController::closeOpenedProject(const bool quitApp)
 {
+    if (m_liveSessionBusy) {
+        LOGW() << "cannot close while a live montage is being submitted or published";
+        return false;
+    }
     if (m_isProjectClosing) {
         return false;
     }
+    m_liveOpenTimer.stop();
+    m_pendingLivePaths.clear();
 
     m_isProjectClosing = true;
     DEFER {
@@ -1205,6 +1345,12 @@ bool ProjectActionsController::closeOpenedProject(const bool quitApp)
     const IAudacityProjectPtr project = globalContext()->currentProject();
     if (!project) {
         return true;
+    }
+    if (m_liveRecordMirror && !m_liveRecordAcknowledged) {
+        interactive()->error(muse::trc("project", "Live montage pending"),
+                             muse::trc("project", "Stop the recording and validate Montage finished in the editor. "
+                                                 "Keep this recording window open until the final montage is written to Zetta."));
+        return false;
     }
 
     bool result = true;
@@ -1232,6 +1378,11 @@ bool ProjectActionsController::closeOpenedProject(const bool quitApp)
         //! NOTE: finish the live recording file while the project still exists
         m_liveRecordMirror.reset();
         m_liveRecordFollower.reset();
+        m_liveSessionTimer.stop();
+        m_liveMontageSubmitted = false;
+        m_liveRecordPublished = false;
+        m_liveRecordAcknowledged = false;
+        m_actionEnabledChanged.send({ "live-montage-finished", "live-session-cancel", "live-montage-open" });
         m_quickEditHandoffs.erase(project.get());
 
         project->close();
@@ -1558,16 +1709,320 @@ std::string ProjectActionsController::formatNameForExtension(const std::string& 
     return std::string();
 }
 
-bool ProjectActionsController::exportQuickEditToSource(const IAudacityProjectPtr& project)
+bool ProjectActionsController::exportQuickEditToSource(const IAudacityProjectPtr& project,
+                                                       const IAudacityProjectPtr& renderedProject)
 {
     const auto it = m_quickEditSourceFiles.find(project.get());
     if (it == m_quickEditSourceFiles.end()) {
         return false;
     }
 
-    const muse::io::path_t sourcePath = it->second.path;
+    if (!exportQuickEditAudio(renderedProject ? renderedProject : project, it->second.path, !renderedProject, false,
+                              it->second.newFileFormat, it->second.newFileEncoding)) {
+        return false;
+    }
+    it->second.upToDate = true;
+    return true;
+}
+
+void ProjectActionsController::closeSavedWindow()
+{
+    muse::async::Async::call(this, [this]() {
+        if (QWindow* window = mainWindow()->qWindow()) {
+            window->close();
+        }
+    });
+}
+
+bool ProjectActionsController::openLiveEditor(const QString& wavPath, const QString& token)
+{
+    QStringList args { "--new-instance", "--session-type", "start-with-new", "--quick-edit",
+                       "--import-media-file", wavPath };
+    const QString directory = LiveRecordMirror::liveRecordDir();
+    if (!directory.isEmpty()) {
+        args << "--live-dir" << directory;
+    }
+    const QString format = quickEditOption("--record-format", "AU_RECORD_FORMAT");
+    if (!format.isEmpty()) {
+        args << "--record-format" << format;
+    }
+    const QString backup = quickEditOption("--backup-dir", "AU_QUICK_EDIT_BACKUP_DIR");
+    if (!backup.isEmpty()) {
+        args << "--backup-dir" << backup;
+    }
+    if (!token.isEmpty()) {
+        args << "--quick-edit-token" << token;
+    }
+    QProcess process;
+    process.setProgram(QCoreApplication::applicationFilePath());
+    process.setArguments(args);
+    if (!process.startDetached()) {
+        interactive()->error(muse::trc("project", "Live montage error"),
+                             muse::mtrc("project", "Could not start an independent live montage editor: %1")
+                             .arg(muse::String::fromQString(process.errorString())).toStdString());
+        return false;
+    }
+    return true;
+}
+
+void ProjectActionsController::openLiveMontage()
+{
+    if (!canReceiveAction("live-montage-open")) {
+        interactive()->error(muse::trc("project", "Live montage error"),
+                             muse::trc("project", "The live audio is not ready to open."));
+        return;
+    }
+    openLiveEditor(m_liveRecordMirror->wavPath());
+}
+
+void ProjectActionsController::finishLiveMontage()
+{
+    const auto project = currentProject();
+    if (!project || !m_liveRecordFollower || m_liveMontageSubmitted || m_liveSessionBusy) {
+        return;
+    }
+    if (interactive()->questionSync(
+            muse::trc("project", "Montage finished"),
+            muse::trc("project", "Freeze the whole audible montage now? Audio recorded afterwards is NOT included. "
+                                "The recording window will send this snapshot to Zetta after recording stops. "
+                                "Only one editor can submit the final montage."),
+            { IInteractive::Button::Cancel, IInteractive::Button::Yes },
+            IInteractive::Button::Cancel).standardButton() != IInteractive::Button::Yes) {
+        return;
+    }
+
+    m_liveSessionBusy = true;
+    DEFER { m_liveSessionBusy = false; };
+    m_liveRecordFollower->pause();
+    DEFER {
+        if (!m_liveMontageSubmitted) {
+            m_liveRecordFollower->resume();
+        }
+    };
+    QTemporaryDir staging;
+    if (!staging.isValid()) {
+        interactive()->error(muse::trc("project", "Live montage error"), staging.errorString().toStdString());
+        return;
+    }
+    auto* au3Project = reinterpret_cast<au::au3::Au3Project*>(project->au3ProjectPtr());
+    auto* source = au::au3::DomAccessor::findWaveTrack(
+        *au3Project, au::au3::Au3TrackId(m_liveRecordFollower->sourceTrackId()));
+    if (!source) {
+        interactive()->error(muse::trc("project", "Live montage error"),
+                             muse::trc("project", "The live source track was removed. Reopen the live recording."));
+        return;
+    }
+    const bool muted = source->GetMute();
+    const bool solo = source->GetSolo();
+    source->SetMute(true);
+    source->SetSolo(false);
+    DEFER {
+        source->SetMute(muted);
+        source->SetSolo(solo);
+    };
+    const QString renderedPath = staging.filePath("montage-" + QUuid::createUuid().toString(QUuid::WithoutBraces) + ".wav");
+    if (!exportQuickEditAudio(project, muse::io::path_t(renderedPath), false, true)) {
+        return;
+    }
+    QString error;
+    if (!LiveRecordSession::submit(m_liveRecordFollower->wavPath(), renderedPath, error)) {
+        LOGE() << error;
+        interactive()->error(muse::trc("project", "Live montage error"), error.toStdString());
+        return;
+    }
+
+    m_liveRecordFollower->stop();
+    m_liveMontageSubmitted = true;
+    m_quickEditSourceFiles.at(project.get()).upToDate = true;
+    m_actionEnabledChanged.send({ "live-montage-finished" });
+    m_liveSessionTimer.start();
+    toastService()->show(muse::trc("project", "Montage submitted"),
+                         muse::trc("project", "The snapshot is frozen on the live share. Waiting for recording to stop "
+                                             "and for the recording window to publish it to Zetta. Later edits are not included."),
+                         muse::ui::IconCode::Code::WARNING, true, {});
+}
+
+void ProjectActionsController::cancelLiveSession()
+{
+    if (!m_liveRecordMirror || m_liveRecordPublished || m_liveSessionBusy) {
+        return;
+    }
+    if (interactive()->questionSync(
+            muse::trc("project", "Cancel live montage"),
+            muse::trc("project", "Cancel this live session without sending a montage to Zetta? "
+                                "Recording will stop. The raw recording remains in this project; "
+                                "you can save it manually afterwards."),
+            { IInteractive::Button::Cancel, IInteractive::Button::Yes },
+            IInteractive::Button::Cancel).standardButton() != IInteractive::Button::Yes) {
+        return;
+    }
+    m_liveSessionTimer.stop();
+    if (recordController()->isRecording()) {
+        dispatcher()->dispatch(muse::actions::ActionQuery("action://record/stop"));
+    }
+    m_liveRecordMirror->cancel();
+    m_liveRecordMirror.reset();
+    m_actionEnabledChanged.send({ "live-session-cancel", "live-montage-open" });
+}
+
+IAudacityProjectPtr ProjectActionsController::loadLiveMontage(const QString& path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        interactive()->error(muse::trc("project", "Live montage error"), file.errorString().toStdString());
+        return nullptr;
+    }
+    SF_INFO info {};
+    SNDFILE* audio = sf_open_fd(static_cast<int>(file.handle()), SFM_READ, &info, SF_FALSE);
+    if (!audio) {
+        interactive()->error(muse::trc("project", "Live montage error"), sf_strerror(nullptr));
+        return nullptr;
+    }
+    DEFER { sf_close(audio); };
+    if ((info.format & SF_FORMAT_TYPEMASK) != SF_FORMAT_WAV || info.frames <= 0
+        || info.channels < 1 || info.channels > 2 || info.samplerate <= 0) {
+        interactive()->error(muse::trc("project", "Live montage error"),
+                             muse::trc("project", "The submitted montage is not a supported WAV."));
+        return nullptr;
+    }
+    auto project = std::make_shared<Audacity4Project>(iocContext());
+    const Ret ret = project->createNew();
+    if (!ret) {
+        interactive()->error(muse::trc("project", "Live montage error"), ret.text());
+        return nullptr;
+    }
+    auto* au3Project = reinterpret_cast<au::au3::Au3Project*>(project->au3ProjectPtr());
+    auto track = au::au3::Au3WaveTrackFactory::Get(*au3Project).Create(size_t(info.channels), floatSample, info.samplerate);
+    std::vector<float> samples(65536 * size_t(info.channels));
+    sf_count_t framesRead = 0;
+    sf_count_t frames;
+    while ((frames = sf_readf_float(audio, samples.data(), 65536)) > 0) {
+        for (int channel = 0; channel < info.channels; ++channel) {
+            track->Append(size_t(channel), reinterpret_cast<constSamplePtr>(samples.data() + channel),
+                          floatSample, size_t(frames), unsigned(info.channels), floatSample);
+        }
+        framesRead += frames;
+    }
+    if (sf_error(audio) != SF_ERR_NO_ERROR || framesRead != info.frames) {
+        interactive()->error(muse::trc("project", "Live montage error"),
+                             muse::trc("project", "The submitted montage could not be read completely."));
+        return nullptr;
+    }
+    track->Flush();
+    au::au3::Au3TrackList::Get(*au3Project).Add(track);
+    project->trackeditProject()->reload();
+    return project;
+}
+
+void ProjectActionsController::pollLiveSession()
+{
+    if (m_liveSessionBusy) {
+        return;
+    }
+    m_liveSessionBusy = true;
+    DEFER { m_liveSessionBusy = false; };
+    if (m_liveRecordMirror) {
+        m_actionEnabledChanged.send({ "live-montage-open" });
+    }
+
+    if (m_liveRecordMirror && m_liveRecordMirror->isFinished()) {
+        if (recordController()->isRecording()) {
+            return;
+        }
+        if (m_liveRecordMirror->hasFailed()) {
+            m_liveSessionTimer.stop();
+            interactive()->error(muse::trc("project", "Live recording error"),
+                                 muse::trc("project", "The live recording failed. Nothing was sent to Zetta. "
+                                                     "Keep the recording project open to recover the audio."));
+            return;
+        }
+        const QString wavPath = m_liveRecordMirror->wavPath();
+        if (!QFile::exists(LiveRecordSession::submissionPath(wavPath))) {
+            return;
+        }
+        QString error;
+        if (!m_liveRecordPublished) {
+            QString renderedPath;
+            if (!LiveRecordSession::publicationReady(wavPath, renderedPath, error)) {
+                m_liveSessionTimer.stop();
+                interactive()->error(muse::trc("project", "Live montage error"),
+                                     error.isEmpty() ? muse::trc("project", "The recording is not ready for publication.")
+                                                     : error.toStdString());
+                return;
+            }
+            const auto recording = currentProject();
+            const auto source = m_quickEditSourceFiles.find(recording.get());
+            if (source == m_quickEditSourceFiles.end()) {
+                m_liveSessionTimer.stop();
+                interactive()->error(muse::trc("project", "Live montage error"),
+                                     muse::trc("project", "The Zetta recording target is missing."));
+                return;
+            }
+            const QDir rawBackupDir(QDir(quickEditBackupRoot()).filePath(
+                                        QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss-zzz")
+                                        + "_raw_" + QUuid::createUuid().toString(QUuid::WithoutBraces)));
+            const QString rawBackupPath = rawBackupDir.filePath(
+                QFileInfo(source->second.path.toQString()).completeBaseName() + ".aup3");
+            auto* rawProject = reinterpret_cast<AudacityProject*>(recording->au3ProjectPtr());
+            if (!QDir().mkpath(rawBackupDir.path())
+                || !ProjectFileIO::Get(*rawProject).SaveCopy(au::au3::wxFromString(muse::String::fromQString(rawBackupPath)))) {
+                m_liveSessionTimer.stop();
+                interactive()->error(muse::trc("project", "Live montage error"),
+                                     muse::trc("project", "Could not back up the raw recording. Nothing was sent to Zetta."));
+                return;
+            }
+            const auto montage = loadLiveMontage(renderedPath);
+            if (!montage || !exportQuickEditToSource(currentProject(), montage)) {
+                m_liveSessionTimer.stop();
+                return;
+            }
+            m_liveRecordPublished = true;
+        }
+        if (!LiveRecordSession::acknowledge(wavPath, error)) {
+            m_liveSessionTimer.stop();
+            interactive()->error(muse::trc("project", "Live montage error"), error.toStdString());
+            return;
+        }
+        m_liveSessionTimer.stop();
+        m_liveRecordAcknowledged = true;
+        m_actionEnabledChanged.send({ "live-session-cancel", "live-montage-open" });
+        closeSavedWindow();
+    } else if (m_liveRecordFollower && m_liveMontageSubmitted) {
+        const QString wavPath = m_liveRecordFollower->wavPath();
+        QString error;
+        LiveRecordSession::State state;
+        if (!LiveRecordSession::readState(wavPath, state, error) || state == LiveRecordSession::State::Failed) {
+            m_liveSessionTimer.stop();
+            interactive()->error(muse::trc("project", "Live montage error"),
+                                 error.isEmpty() ? muse::trc("project", "Recording failed; the montage was not published.")
+                                                 : error.toStdString());
+            return;
+        }
+        if (!QFile::exists(LiveRecordSession::resultPath(wavPath))) {
+            return;
+        }
+        if (!LiveRecordSession::isAcknowledged(wavPath, error)) {
+            m_liveSessionTimer.stop();
+            interactive()->error(muse::trc("project", "Live montage error"), error.toStdString());
+            return;
+        }
+        m_liveSessionTimer.stop();
+        toastService()->show(muse::trc("project", "Saved"),
+                             muse::trc("project", "The recording window has written the final montage to the Zetta file."),
+                             muse::ui::IconCode::Code::TICK, true, {});
+        if (isQuickEditProjectUpToDate(currentProject())) {
+            closeSavedWindow();
+        }
+    }
+}
+
+bool ProjectActionsController::exportQuickEditAudio(const IAudacityProjectPtr& project, const muse::io::path_t& sourcePath,
+                                                    bool askSelection, bool renderWav,
+                                                    const std::string& newFileFormat, const muse::ValList& newFileEncoding)
+{
     const bool isNewFile = QFileInfo(sourcePath.toQString()).size() == 0;
-    const std::string format = quickEditFormat(sourcePath);
+    const std::string format = renderWav ? formatNameForExtension("wav")
+                              : (isNewFile && !newFileFormat.empty() ? newFileFormat : quickEditFormat(sourcePath));
 
     //! NOTE: MP2 / MP3 keep the source MPEG version and bitrate
     std::optional<MpegAudioInfo> mpegAudio;
@@ -1587,7 +2042,7 @@ bool ProjectActionsController::exportQuickEditToSource(const IAudacityProjectPtr
 
     //! NOTE: with a time selection, ask whether only the selection or the whole project replaces the source file
     importexport::ExportProcessType processType = importexport::ExportProcessType::FULL_PROJECT_AUDIO;
-    if (!selectionController()->timeSelectionIsEmpty()) {
+    if (askSelection && !selectionController()->timeSelectionIsEmpty()) {
         const IInteractive::ButtonDatas buttons = {
             IInteractive::ButtonData(IInteractive::Button::Cancel, muse::trc("project", "Cancel")),
             IInteractive::ButtonData(BTN_QUICK_EDIT_SAVE_WHOLE_FILE, muse::trc("project", "Whole file")),
@@ -1614,7 +2069,7 @@ bool ProjectActionsController::exportQuickEditToSource(const IAudacityProjectPtr
     uint64_t rate = 0;
     if (const auto trackeditProject = project->trackeditProject()) {
         for (const trackedit::Track& track : trackeditProject->trackList()) {
-            if (track.type == trackedit::TrackType::Label) {
+            if (track.type == trackedit::TrackType::Label || (renderWav && track.mute)) {
                 continue;
             }
             stereo = stereo || track.type == trackedit::TrackType::Stereo;
@@ -1625,6 +2080,12 @@ bool ProjectActionsController::exportQuickEditToSource(const IAudacityProjectPtr
     importexport::IExporter::Options options;
     options[importexport::IExporter::OptionKey::Format] = muse::Val(format);
     options[importexport::IExporter::OptionKey::ProcessType] = muse::Val(processType);
+    if (renderWav || !askSelection) {
+        options[importexport::IExporter::OptionKey::TrimBlankSpace] = muse::Val(false);
+    }
+    if (renderWav) {
+        options[importexport::IExporter::OptionKey::UseAudibleTrackBounds] = muse::Val(true);
+    }
     options[importexport::IExporter::OptionKey::ExportChannelsType]
         = muse::Val(static_cast<int>(stereo ? importexport::ExportChannelsPref::ExportChannels::STEREO
                                      : importexport::ExportChannelsPref::ExportChannels::MONO));
@@ -1636,7 +2097,12 @@ bool ProjectActionsController::exportQuickEditToSource(const IAudacityProjectPtr
     //! NOTE: keep the source bit depth / encoding when it can be read (WAV, AIFF, FLAC, MP2, MP3);
     //! other formats (MP3, OGG...) use the user's export preferences
     muse::ValList encodingParameters = mpegAudio ? mpegEncodingParameters(*mpegAudio) : sourceEncodingParameters(sourcePath);
-    if (isNewFile) {
+    if (renderWav) {
+        encodingParameters = { exportParameter(0, muse::Val(SF_FORMAT_WAV)),
+                               exportParameter(SF_FORMAT_WAV, muse::Val(SF_FORMAT_FLOAT)) };
+    } else if (isNewFile && !newFileFormat.empty()) {
+        encodingParameters = newFileEncoding;
+    } else if (isNewFile) {
         if (const std::optional<RecordFormat> recordFormat = configuredRecordFormat()) {
             encodingParameters = recordFormat->parameters;
         }
@@ -1683,6 +2149,11 @@ bool ProjectActionsController::exportQuickEditToSource(const IAudacityProjectPtr
     const QString projectBackupPath = backupDir.filePath(sourceBaseName + ".aup3");
     if (!au3Project || !ProjectFileIO::Get(*au3Project).SaveCopy(au::au3::wxFromString(muse::String::fromQString(projectBackupPath)))) {
         LOGW() << "could not back up the quick edit project to " << projectBackupPath;
+        if (renderWav) {
+            interactive()->error(muse::trc("project", "Live montage error"),
+                                 muse::trc("project", "Could not back up the montage project. The montage was not submitted."));
+            return false;
+        }
     }
 
     //! NOTE: the application which launched the quick edit may keep the file open, allowing to replace it but not
@@ -1711,13 +2182,13 @@ bool ProjectActionsController::exportQuickEditToSource(const IAudacityProjectPtr
         return false;
     }
 
-    it->second.upToDate = true;
-
     const bool dismissable = true;
-    toastService()->show(muse::trc("project", "Saved"),
-                         muse::mtrc("project", "Changes exported back to \"%1\"").arg(sourcePath.toString()).toStdString(),
-                         muse::ui::IconCode::Code::TICK,
-                         dismissable, {});
+    if (!renderWav) {
+        toastService()->show(muse::trc("project", "Saved"),
+                             muse::mtrc("project", "Changes exported back to \"%1\"").arg(sourcePath.toString()).toStdString(),
+                             muse::ui::IconCode::Code::TICK,
+                             dismissable, {});
+    }
 
     return true;
 }
@@ -1736,6 +2207,19 @@ bool ProjectActionsController::saveProject(SaveMode saveMode, SaveLocationType s
     IAudacityProjectPtr project = currentProject();
 
     if (saveMode == SaveMode::Save && isQuickEditProject(project)) {
+        if (m_liveRecordMirror) {
+            if (recordController()->isRecording()) {
+                dispatcher()->dispatch(muse::actions::ActionQuery("action://record/stop"));
+            }
+            m_liveSessionTimer.start();
+            pollLiveSession();
+            return m_liveRecordAcknowledged;
+        }
+        if (m_liveMontageSubmitted) {
+            m_liveSessionTimer.start();
+            pollLiveSession();
+            return false;
+        }
         if (recordController()->isRecording()) {
             dispatcher()->dispatch(muse::actions::ActionQuery("action://record/stop"));
         }
@@ -1746,12 +2230,8 @@ bool ProjectActionsController::saveProject(SaveMode saveMode, SaveLocationType s
         //! so saving also closes Audacity (not when the save was asked by closing, which closes anyway)
         //! Closing the window like the user would: only this window when there are others (e.g. a quick edit
         //! handed to a running Audacity), else Audacity quits
-        if (exported && !m_isProjectClosing) {
-            muse::async::Async::call(this, [this]() {
-                if (QWindow* window = mainWindow()->qWindow()) {
-                    window->close();
-                }
-            });
+        if (exported && !m_isProjectClosing && !m_liveRecordFollower) {
+            closeSavedWindow();
         }
 
         return exported;

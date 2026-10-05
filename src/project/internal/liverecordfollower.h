@@ -32,29 +32,34 @@ public:
 
     //! whether the file is a live recording which is still running
     static bool isRunningLiveRecording(const muse::io::path_t& wavPath);
+    static bool isLiveRecording(const muse::io::path_t& wavPath);
 
-    //! where the edit of a live recording is saved: "<name>_montage.wav" next to it
-    static muse::io::path_t montagePath(const muse::io::path_t& wavPath);
-
-    void start(const IAudacityProjectPtr& project, const muse::io::path_t& wavPath);
+    bool start(const IAudacityProjectPtr& project, const muse::io::path_t& wavPath, const muse::io::path_t& draftPath);
     void stop();
+    void pause() { m_timer.stop(); }
+    void resume() { if (m_project) { m_timer.start(); } }
+    QString wavPath() const { return m_wavPath; }
+    int64_t sourceTrackId() const { return m_sourceTrackId; }
 
 private:
     struct WavFormat {
         qint64 dataOffset = 0;
         int channels = 0;
         int bitsPerSample = 0;
+        quint32 dataBytes = 0;
+        int sampleRate = 0;
     };
 
     static bool readWavFormat(const QString& path, WavFormat& format);
-    static QString statusPath(const QString& wavPath);
-
     void follow();
+    void reportError(const QString& error);
 
     IAudacityProject* m_project = nullptr;
     QString m_wavPath;
     WavFormat m_format;
     int64_t m_framesRead = 0;
+    int64_t m_sourceTrackId = -1;
+    int64_t m_sourceClipId = -1;
     QTimer m_timer;
 };
 }

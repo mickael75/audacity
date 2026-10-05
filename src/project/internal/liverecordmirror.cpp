@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -15,6 +16,10 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSysInfo>
+#include <QSaveFile>
+#include <QUuid>
+
+#include "liverecordsession.h"
 
 #include "framework/global/async/async.h"
 #include "framework/global/log.h"
@@ -75,16 +80,23 @@ QString LiveRecordMirror::liveRecordDir()
     return qEnvironmentVariable("AU_LIVE_RECORD_DIR");
 }
 
-void LiveRecordMirror::start(const IAudacityProjectPtr& project, const muse::io::path_t& targetPath)
+bool LiveRecordMirror::start(const IAudacityProjectPtr& project, const muse::io::path_t& targetPath)
 {
     const QString dir = liveRecordDir();
     if (m_started || dir.isEmpty() || !project) {
-        return;
+        return false;
     }
 
     if (!QDir().mkpath(dir)) {
         LOGE() << "live recording: can't create " << dir;
-        return;
+        return false;
+    }
+    m_session = std::make_unique<LiveRecordSession>(dir, targetPath.toQString());
+    QString error;
+    if (!m_session->claimTarget(error)) {
+        LOGE() << "live recording: " << error;
+        m_session.reset();
+        return false;
     }
 
     m_project = project.get();
@@ -92,17 +104,27 @@ void LiveRecordMirror::start(const IAudacityProjectPtr& project, const muse::io:
     m_startTime = QDateTime::currentDateTime().toString(Qt::ISODate);
 
     const QString baseName = QFileInfo(m_targetPath).completeBaseName();
-    const QString name = baseName + "_" + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss");
+    const QString name = baseName + "_" + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss")
+                         + "_" + QUuid::createUuid().toString(QUuid::WithoutBraces);
     m_wavPath = QDir(dir).filePath(name + ".wav");
-    m_statusPath = QDir(dir).filePath(name + ".json");
+    m_statusPath = LiveRecordSession::statusPath(m_wavPath);
     m_copiedSamples = 0;
     m_channels = 0;
     m_rate = 0;
     m_stopping = false;
     m_started = true;
+    m_finished = false;
+    m_failed = false;
     m_sinceLastCopy.start();
 
-    writeStatus("recording");
+    if (!writeStatus("recording") || !m_session->publishTarget(m_wavPath, error)) {
+        LOGE() << "live recording: could not register Zetta target: " << error;
+        writeStatus("error");
+        m_started = false;
+        m_project = nullptr;
+        m_session.reset();
+        return false;
+    }
     LOGI() << "live recording to " << m_wavPath;
 
     m_writer = std::thread(&LiveRecordMirror::writerLoop, this, m_wavPath);
@@ -111,12 +133,14 @@ void LiveRecordMirror::start(const IAudacityProjectPtr& project, const muse::io:
         copyNewAudio(false);
     });
 
-    //! NOTE: finish on the next event loop, not while the notification is being sent
+    // Copy the tail before recording clip keys are cleared by the notification sender.
     record()->recordingFinished().onNotify(this, [this]() {
+        copyNewAudio(true);
         muse::async::Async::call(this, [this]() {
             finish();
         });
     });
+    return true;
 }
 
 void LiveRecordMirror::finish()
@@ -139,11 +163,22 @@ void LiveRecordMirror::finish()
         m_writer.join();
     }
 
-    writeStatus("done");
+    if (!writeStatus(m_failed ? "error" : "done")) {
+        m_failed = true;
+    }
     LOGI() << "live recording done: " << m_wavPath;
 
     m_started = false;
+    m_finished = true;
     m_project = nullptr;
+}
+
+void LiveRecordMirror::cancel()
+{
+    m_failed = true;
+    finish();
+    writeStatus("error");
+    m_session.reset();
 }
 
 void LiveRecordMirror::copyNewAudio(bool force)
@@ -191,8 +226,12 @@ void LiveRecordMirror::copyNewAudio(bool force)
 
         for (int c = 0; c < channels; ++c) {
             buffers[c].assign(frames, 0.0f);
-            clip->GetSamples(size_t(c), reinterpret_cast<samplePtr>(buffers[c].data()), floatSample,
-                             sampleCount(m_copiedSamples), frames, false /*mayThrow*/);
+            if (!clip->GetSamples(size_t(c), reinterpret_cast<samplePtr>(buffers[c].data()), floatSample,
+                                  sampleCount(m_copiedSamples), frames, false /*mayThrow*/)) {
+                LOGE() << "live recording: can't read recorded samples";
+                m_failed = true;
+                return;
+            }
         }
 
         Chunk chunk;
@@ -215,9 +254,10 @@ void LiveRecordMirror::copyNewAudio(bool force)
     }
 }
 
-void LiveRecordMirror::writeStatus(const QString& status) const
+bool LiveRecordMirror::writeStatus(const QString& status) const
 {
     QJsonObject json;
+    json["version"] = 1;
     json["status"] = status;
     json["target"] = m_targetPath;
     json["audio"] = QFileInfo(m_wavPath).fileName();
@@ -225,12 +265,13 @@ void LiveRecordMirror::writeStatus(const QString& status) const
     json["started"] = m_startTime;
     json["updated"] = QDateTime::currentDateTime().toString(Qt::ISODate);
 
-    QFile file(m_statusPath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    QSaveFile file(m_statusPath);
+    const QByteArray data = QJsonDocument(json).toJson();
+    if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit()) {
         LOGW() << "live recording: can't write " << m_statusPath;
-        return;
+        return false;
     }
-    file.write(QJsonDocument(json).toJson());
+    return true;
 }
 
 void LiveRecordMirror::writerLoop(QString wavPath)
@@ -261,9 +302,16 @@ void LiveRecordMirror::writerLoop(QString wavPath)
             if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
                 LOGE() << "live recording: can't write " << wavPath << ": " << file.errorString();
                 failed = true;
+                m_failed = true;
                 continue;
             }
-            file.write(wavHeader(chunk.channels, chunk.rate, 0));
+            const QByteArray header = wavHeader(chunk.channels, chunk.rate, 0);
+            if (file.write(header) != header.size()) {
+                LOGE() << "live recording: can't write WAV header";
+                failed = true;
+                m_failed = true;
+                continue;
+            }
             opened = true;
         }
 
@@ -276,21 +324,28 @@ void LiveRecordMirror::writerLoop(QString wavPath)
             pcm[int(i * 2 + 1)] = char((value >> 8) & 0xFF);
         }
 
-        if (file.write(pcm) != pcm.size()) {
+        if (pcm.size() > std::numeric_limits<quint32>::max() - 36ULL - dataBytes
+            || file.write(pcm) != pcm.size()) {
             LOGE() << "live recording: write error on " << wavPath << ": " << file.errorString();
             failed = true;
+            m_failed = true;
             continue;
         }
         dataBytes += quint32(pcm.size());
 
         //! NOTE: keep the header sizes up to date, then go back to the end for the next block
-        file.seek(0);
-        file.write(wavHeader(chunk.channels, chunk.rate, dataBytes));
-        file.seek(file.size());
-        file.flush();
+        const QByteArray header = wavHeader(chunk.channels, chunk.rate, dataBytes);
+        if (!file.seek(0) || file.write(header) != header.size() || !file.seek(file.size()) || !file.flush()) {
+            LOGE() << "live recording: can't update WAV header: " << file.errorString();
+            failed = true;
+            m_failed = true;
+        }
     }
 
     if (opened) {
         file.close();
+    } else {
+        LOGE() << "live recording: no audio was written";
+        m_failed = true;
     }
 }
