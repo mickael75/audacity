@@ -279,6 +279,15 @@ Le journal d'Audacity se trouve dans `%LOCALAPPDATA%\Audacity\`, probablement so
 
 ## Mettre à jour cette version
 
+### Compilation Windows avec un MSVC récent
+
+Le projet reste en C++17 et Muse utilise encore les coroutines expérimentales.
+La configuration MSVC définit `_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS`
+pour les compilations C++ afin d'éviter l'erreur `STL1011` des outils récents,
+y compris sur ARM64. Il s'agit d'une compatibilité temporaire avec l'API existante,
+pas d'une migration vers les coroutines C++20. Si Microsoft supprime cette API,
+une mise à jour de Muse sera nécessaire.
+
 Le code est sur la branche `quick-edit` de https://github.com/mickael75/audacity.
 
 1. Récupérer les dernières modifications (dans le dossier `au-quickedit`) :

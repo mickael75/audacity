@@ -27,6 +27,9 @@ if (CC_IS_GCC)
 elseif(CC_IS_MSVC)
     message(STATUS "Using Compiler MSVC ${CMAKE_CXX_COMPILER_VERSION}")
 
+    # Muse still uses the C++17 experimental coroutine API; recent MSVC STL rejects it unless explicitly allowed.
+    add_compile_definitions("$<$<COMPILE_LANGUAGE:CXX>:_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS>")
+
     set(CMAKE_CXX_FLAGS                 "/MP /EHsc /utf-8 /bigobj")
     set(CMAKE_C_FLAGS                   "/MP /utf-8")
     set(CMAKE_CXX_FLAGS_DEBUG           "/MDd /Zi /Ob0 /Od /RTC1")
@@ -162,4 +165,3 @@ if (OS_IS_MAC)
     set(MACOSX_DEPLOYMENT_TARGET 10.15)
     set(CMAKE_OSX_DEPLOYMENT_TARGET 10.15)
 endif(OS_IS_MAC)
-
