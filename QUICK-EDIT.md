@@ -22,8 +22,8 @@ Ligne complète avec toutes les options :
 `--live-record` prépare une session sans lancer la capture : clique sur **Enregistrer** dans Audacity
 quand tu es prêt. Si une session correspond déjà au chemin Zetta transmis, Audacity ouvre son WAV live
 pour montage, sans démarrer une deuxième capture.
-Utilisez `--quick-edit` seul uniquement pour monter un fichier existant hors
-d'une session live.
+Si aucune session n'existe et que Zetta transmet un fichier déjà enregistré, Audacity l'ouvre
+directement en quick-edit, comme avant. Un fichier vide ou inexistant prépare une nouvelle session.
 
 À respecter :
 - **`%f` à la fin**, après toutes les options.
@@ -74,7 +74,8 @@ Si l'option et la variable sont toutes les deux présentes, l'option de la ligne
 |---|---|
 | Un fichier audio existant | L'ouvre pour le modifier. Ctrl+S le réécrit, puis ferme Audacity. |
 | Un fichier **vide ou inexistant** (enregistrement) | Ouvre un projet vide et **lance l'enregistrement tout de suite**. Ctrl+S, même pendant l'enregistrement, arrête, écrit le fichier et ferme. |
-| Un fichier en mode `--live-record`, sans session correspondante | Prépare une nouvelle session sans démarrer la capture ; le bouton **Enregistrer** démarre la capture. |
+| Un fichier existant en mode `--live-record`, sans session correspondante | L'ouvre directement en quick-edit, comme avant. |
+| Un fichier vide ou inexistant en mode `--live-record`, sans session correspondante | Prépare une nouvelle session sans démarrer la capture ; le bouton **Enregistrer** démarre la capture. |
 | Un fichier en mode `--live-record`, avec session correspondante | Ouvre le WAV partagé de cette session dans un éditeur de montage. N'en démarre pas une deuxième. |
 | Un fichier déjà ouvert dans un autre Audacity | Affiche « déjà ouvert » et ne relance pas d'enregistrement. Le dernier Ctrl+S l'emporte. |
 | Le même fichier Zetta qu'une session live active, avec le même `--live-dir` | Retrouve l'émission et ouvre son audio live dans un éditeur indépendant, même si le fichier Zetta est encore vide. Aucun deuxième enregistrement ne démarre. |

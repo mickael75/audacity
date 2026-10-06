@@ -1041,6 +1041,10 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
             LOGI() << "Zetta target " << actualPaths.front().toQString() << " follows live session " << wavPath;
             actualPaths.front() = muse::io::path_t(wavPath);
             liveRecord = false;
+        } else if (liveRecord && QFileInfo(actualPaths.front().toQString()).size() > 0) {
+            LOGI() << "no live session for existing Zetta audio; opening it for quick edit: "
+                   << actualPaths.front().toQString();
+            liveRecord = false;
         } else if (m_liveOpenTimer.isActive()) {
             interactive()->error(muse::trc("project", "Live montage error"),
                                  muse::trc("project", "The recording was closed while waiting for its audio. "
@@ -1116,8 +1120,7 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
 
     //! NOTE: the calling application may give a file to create (missing or empty, e.g. to record into it):
     //! quick edit then starts with an empty project, which is saved to that file
-    const bool isNewQuickEditFile = isQuickEdit
-                                    && (liveRecord || QFileInfo(actualPaths.front().toQString()).size() == 0);
+    const bool isNewQuickEditFile = isQuickEdit && QFileInfo(actualPaths.front().toQString()).size() == 0;
     if (liveRecord) {
         LOGI() << "live record requested for " << actualPaths.front().toQString();
     }
