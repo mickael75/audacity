@@ -71,6 +71,7 @@ private:
     QElapsedTimer m_sinceLastCopy;
     bool m_started = false;
     bool m_finished = false;
+    bool m_recordingPublished = false;
     std::atomic<bool> m_failed { false };
 
     //! NOTE: the (network) file is written by its own thread, so that a slow share never blocks the recording

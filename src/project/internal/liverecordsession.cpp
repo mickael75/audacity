@@ -217,7 +217,9 @@ bool LiveRecordSession::readState(const QString& wavPath, State& state, QString&
         return false;
     }
     const QString status = object.value("status").toString();
-    if (status == "recording") {
+    if (status == "ready") {
+        state = State::Ready;
+    } else if (status == "recording") {
         state = State::Recording;
     } else if (status == "done") {
         state = State::Done;

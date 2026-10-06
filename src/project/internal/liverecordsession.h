@@ -12,7 +12,7 @@ namespace au::project {
 class LiveRecordSession
 {
 public:
-    enum class State { Recording, Done, Failed };
+    enum class State { Ready, Recording, Done, Failed };
     enum class Lookup { Absent, Pending, Found, Error };
 
     LiveRecordSession(const QString& directory, const QString& target);

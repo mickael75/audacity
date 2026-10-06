@@ -211,6 +211,22 @@ TEST_F(LiveRecordSessionTests, ZettaTargetRemainsAvailableForMontageAfterRecordi
     EXPECT_EQ(found, live);
 }
 
+TEST_F(LiveRecordSessionTests, ZettaTargetCanWaitForManualRecordingStart)
+{
+    const QString target = directory.filePath("zetta/emission.-123");
+    LiveRecordSession recorder(directory.path(), target);
+    QString error;
+    ASSERT_TRUE(recorder.claimTarget(error));
+    ASSERT_TRUE(recorder.publishTarget(live, error));
+    setState("ready");
+
+    LiveRecordSession::State state;
+    ASSERT_TRUE(LiveRecordSession::readState(live, state, error)) << error.toStdString();
+    EXPECT_EQ(state, LiveRecordSession::State::Ready);
+    QString found;
+    EXPECT_EQ(LiveRecordSession::findTarget(directory.path(), target, found, error), LiveRecordSession::Lookup::Pending);
+}
+
 TEST_F(LiveRecordSessionTests, MultipleEmissionsWithSameFileNameStayIndependent)
 {
     const QString targetA = directory.filePath("studio-a/emission.-123");

@@ -1135,11 +1135,17 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
     }
 
     if (isNewQuickEditFile && !openedElsewhere && canQuickEdit(actualPaths.front())) {
-        //! NOTE: tell it, a wrong path would otherwise silently open an empty project
-        toastService()->show(muse::trc("project", "Recording"),
-                             muse::mtrc("project", "Recording into \"%1\". Save (Ctrl+S) to stop, write the file and close.")
-                             .arg(actualPaths.front().toString()).toStdString(),
-                             muse::ui::IconCode::Code::WARNING, true /*dismissable*/, {});
+        if (liveRecord) {
+            toastService()->show(muse::trc("project", "Ready to record"),
+                                 muse::trc("project", "The live session is ready. Click Record when you want to start capturing audio."),
+                                 muse::ui::IconCode::Code::WARNING, true /*dismissable*/, {});
+        } else {
+            //! NOTE: tell it, a wrong path would otherwise silently open an empty project
+            toastService()->show(muse::trc("project", "Recording"),
+                                 muse::mtrc("project", "Recording into \"%1\". Save (Ctrl+S) to stop, write the file and close.")
+                                 .arg(actualPaths.front().toString()).toStdString(),
+                                 muse::ui::IconCode::Code::WARNING, true /*dismissable*/, {});
+        }
     } else if (!isNewQuickEditFile) {
         ret = project->import(actualPaths);
     }
@@ -1164,8 +1170,8 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
     if (ret && isQuickEdit && canQuickEdit(actualPaths.front())) {
         startQuickEdit(project, actualPaths.front(), lock);
 
-        //! NOTE: a new (empty) file is given to record into (e.g. RCS Zetta "record"): start recording right away,
-        //! once the project page is ready (not when another Audacity is already recording into it)
+        //! NOTE: ordinary quick edits of new files start recording when ready; --live-record reserves the
+        //! shared session now but waits for the operator to press Record.
         if (isNewQuickEditFile && !openedElsewhere) {
             //! NOTE: with a live recording directory, the recording is also written there while it runs
             if (!LiveRecordMirror::liveRecordDir().isEmpty()) {
@@ -1185,16 +1191,18 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
                 m_liveSessionTimer.start();
             }
 
-            muse::async::Async::call(this, [this, project]() {
-                dispatcher()->dispatch("record-on-new-track");
-                if (m_liveRecordMirror && !recordController()->isRecording()) {
-                    m_liveSessionTimer.stop();
-                    m_liveRecordMirror->cancel();
-                    interactive()->error(muse::trc("project", "Live recording error"),
-                                         muse::trc("project", "Audio capture did not start. The live session was cancelled; "
-                                                             "check the input device before reopening from Zetta."));
-                }
-            });
+            if (!liveRecord) {
+                muse::async::Async::call(this, [this, project]() {
+                    dispatcher()->dispatch("record-on-new-track");
+                    if (m_liveRecordMirror && !recordController()->isRecording()) {
+                        m_liveSessionTimer.stop();
+                        m_liveRecordMirror->cancel();
+                        interactive()->error(muse::trc("project", "Live recording error"),
+                                             muse::trc("project", "Audio capture did not start. The live session was cancelled; "
+                                                                 "check the input device before reopening from Zetta."));
+                    }
+                });
+            }
         }
     }
 
