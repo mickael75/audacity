@@ -552,6 +552,7 @@ ProjectActionsController::ProjectActionsController(muse::modularity::ContextPtr 
         if (m_liveOpenWait.elapsed() > 30000) {
             m_liveOpenTimer.stop();
             m_pendingLivePaths.clear();
+            m_pendingLiveRecord = false;
             interactive()->error(muse::trc("project", "Live montage error"),
                                  muse::trc("project", "No live audio became available within 30 seconds. "
                                                      "Check the recording and the shared live directory, then reopen from Zetta."));
@@ -559,10 +560,12 @@ ProjectActionsController::ProjectActionsController(muse::modularity::ContextPtr 
         }
         const auto paths = m_pendingLivePaths;
         const QString token = m_pendingLiveToken;
-        const Ret ret = processMediaFiles(paths, true, token);
+        const bool liveRecord = m_pendingLiveRecord;
+        const Ret ret = processMediaFiles(paths, true, token, liveRecord);
         if (!ret) {
             m_liveOpenTimer.stop();
             m_pendingLivePaths.clear();
+            m_pendingLiveRecord = false;
         }
     });
 }
@@ -1006,7 +1009,7 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
         actualPaths.resize(1);
     }
 
-    if (quickEdit && !liveRecord && actualPaths.size() == 1 && !LiveRecordMirror::liveRecordDir().isEmpty()) {
+    if (quickEdit && actualPaths.size() == 1 && !LiveRecordMirror::liveRecordDir().isEmpty()) {
         const QString directory = LiveRecordMirror::liveRecordDir();
         if (!QDir().mkpath(directory)) {
             interactive()->error(muse::trc("project", "Live montage error"),
@@ -1026,6 +1029,7 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
                 m_liveOpenWait.start();
                 m_pendingLivePaths = { actualPaths.front() };
                 m_pendingLiveToken = quickEditToken;
+                m_pendingLiveRecord = liveRecord;
                 m_liveOpenTimer.start();
                 toastService()->show(muse::trc("project", "Live recording"),
                                      muse::trc("project", "Opening the matching Zetta recording as soon as its first audio is available."),
@@ -1036,6 +1040,7 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
         if (lookup == LiveRecordSession::Lookup::Found) {
             LOGI() << "Zetta target " << actualPaths.front().toQString() << " follows live session " << wavPath;
             actualPaths.front() = muse::io::path_t(wavPath);
+            liveRecord = false;
         } else if (m_liveOpenTimer.isActive()) {
             interactive()->error(muse::trc("project", "Live montage error"),
                                  muse::trc("project", "The recording was closed while waiting for its audio. "
@@ -1045,6 +1050,7 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
     }
     m_liveOpenTimer.stop();
     m_pendingLivePaths.clear();
+    m_pendingLiveRecord = false;
 
     const bool needsOwnAudioEngine = LiveRecordFollower::isLiveRecording(actualPaths.front())
                                     || (quickEdit && !LiveRecordMirror::liveRecordDir().isEmpty());

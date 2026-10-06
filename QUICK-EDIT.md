@@ -13,17 +13,16 @@ Dans la configuration de l'éditeur externe de Zetta :
 | Champ Zetta | Valeur |
 |---|---|
 | Programme | Le chemin d'Audacity, par exemple `C:\Program Files\Audacity\Audacity.exe` |
-| Arguments — montage | `--quick-edit --live-dir "\\SERVEUR\LiveRec" "%f"` |
-| Arguments — démarrage d'un enregistrement | `--live-record --live-dir "\\SERVEUR\LiveRec" "%f"` |
+| Arguments (même valeur sur les postes Enregistrer et Monter) | `--live-record --live-dir "\\SERVEUR\LiveRec" "%f"` |
 
 Ligne complète avec toutes les options :
 ```
 --quick-edit --live-dir "\\SERVEUR\LiveRec" --record-format mp2-256 --backup-dir "D:\Sauvegardes Audacity" %f
 ```
-Pour l'action d'enregistrement, remplacez `--quick-edit` par `--live-record`.
-Ce mode démarre une nouvelle capture même si Zetta transmet un WAV existant ; l'ancien fichier
-est sauvegardé lors de l'enregistrement du résultat. Les actions de montage doivent conserver
-`--quick-edit`, afin qu'un WAV déjà rempli s'ouvre pour édition et ne soit pas réenregistré.
+`--live-record` démarre une capture si aucune session ne correspond au chemin Zetta transmis.
+Si une session correspond déjà, Audacity ouvre son WAV live pour montage, sans démarrer une
+deuxième capture. Utilisez `--quick-edit` seul uniquement pour monter un fichier existant hors
+d'une session live.
 
 À respecter :
 - **`%f` à la fin**, après toutes les options.
@@ -40,7 +39,7 @@ Toutes les options sont **facultatives**, sauf `--quick-edit` ou `--live-record`
 | Option | Variable d'environnement | Rôle | Sans l'option |
 |---|---|---|---|
 | `--quick-edit` | | Ouvre un fichier existant pour montage. À utiliser seul ou avec `--live-dir`. | Audacity normal |
-| `--live-record` | | Démarre une nouvelle capture vers le fichier reçu, même s'il existe déjà. Implique `--quick-edit` et exige `--live-dir`. | Non applicable |
+| `--live-record` | | Démarre une capture, ou rejoint la session du même fichier Zetta si elle est déjà en cours. Implique `--quick-edit` et exige `--live-dir`. | Non applicable |
 | `--live-dir "<dossier>"` | `AU_LIVE_RECORD_DIR` | Pendant un enregistrement, copie le son en direct dans un WAV de ce dossier réseau (voir [Enregistrement live](#enregistrement-live)) | Pas de copie live |
 | `--record-format <format>` | `AU_RECORD_FORMAT` | Format des **nouveaux** fichiers (enregistrements) | WAV, ou MP2 si le nom finit par `.mpg` |
 | `--backup-dir "<dossier>"` | `AU_QUICK_EDIT_BACKUP_DIR` | Dossier des sauvegardes | `%TEMP%\Audacity Quick Edit Backups` |
@@ -74,7 +73,8 @@ Si l'option et la variable sont toutes les deux présentes, l'option de la ligne
 |---|---|
 | Un fichier audio existant | L'ouvre pour le modifier. Ctrl+S le réécrit, puis ferme Audacity. |
 | Un fichier **vide ou inexistant** (enregistrement) | Ouvre un projet vide et **lance l'enregistrement tout de suite**. Ctrl+S, même pendant l'enregistrement, arrête, écrit le fichier et ferme. |
-| Un fichier en mode `--live-record` | Ignore son contenu pour démarrer une nouvelle capture ; l'original est sauvegardé quand le résultat est écrit. |
+| Un fichier en mode `--live-record`, sans session correspondante | Démarre une nouvelle capture ; le fichier d'origine est sauvegardé lors de la publication du montage final. |
+| Un fichier en mode `--live-record`, avec session correspondante | Ouvre le WAV partagé de cette session dans un éditeur de montage. N'en démarre pas une deuxième. |
 | Un fichier déjà ouvert dans un autre Audacity | Affiche « déjà ouvert » et ne relance pas d'enregistrement. Le dernier Ctrl+S l'emporte. |
 | Le même fichier Zetta qu'une session live active, avec le même `--live-dir` | Retrouve l'émission et ouvre son audio live dans un éditeur indépendant, même si le fichier Zetta est encore vide. Aucun deuxième enregistrement ne démarre. |
 
@@ -140,16 +140,16 @@ Le WAV live classique est limité à moins de 4 Go ; un dépassement est signal�
 
 ### Plusieurs émissions et ouverture depuis un autre Zetta
 
-Configurez **tous les Zetta concernés** avec `--quick-edit --live-dir "<même dossier partagé>" %f`.
+Configurez **tous les Zetta concernés** avec `--live-record --live-dir "<même dossier partagé>" "%f"`.
 Le Zetta utilisé pour monter doit transmettre **le même chemin audio complet** que celui utilisé
 pour enregistrer cette émission. Audacity utilise ce chemin, et non le seul nom du fichier,
 pour retrouver la session :
 
 | Action depuis Zetta | Résultat |
 |---|---|
-| Enregistrer l'émission A, sans session active pour son fichier | Réserve A et démarre son enregistrement dans un processus indépendant. |
+| Ouvrir l'émission A avec `--live-record`, sans session active pour son fichier | Réserve A et démarre son enregistrement dans un processus indépendant. |
 | Enregistrer l'émission B dans un autre fichier | Démarre une autre session indépendante ; A continue. |
-| Ouvrir A pour montage dans un autre Zetta | Ouvre le live de A, même si le fichier audio Zetta n'a pas encore été écrit. |
+| Ouvrir A pour montage dans un autre Zetta avec les mêmes arguments | Ouvre le live de A, même si le fichier audio Zetta n'a pas encore été écrit. |
 | Ouvrir B pour montage | Ouvre uniquement le live de B. |
 | Ouvrir plusieurs montages de A et de B | Chaque éditeur possède son brouillon distinct et reste rattaché à son émission. |
 | Valider le montage final de A | Attend seulement l'arrêt de A ; n'arrête pas B et ne publie aucun montage de B. |
@@ -170,8 +170,9 @@ des copies temporaires différentes ne peuvent pas être associées sans identif
 
 ### Montage en temps réel, sur le même poste ou sur un autre
 
-1. Configurez l'action **Enregistrer** de Zetta avec `--live-record --live-dir "<dossier partagé>" "%f"`.
-   Configurez séparément l'action **Monter** avec `--quick-edit --live-dir "<dossier partagé>" "%f"`.
+1. Configurez l'action Zetta utilisée pour ouvrir l'audio sur tous les postes avec
+   `--live-record --live-dir "<dossier partagé>" "%f"`.
+   Le premier poste démarre la capture ; les autres ouvrent le même direct pour montage.
 2. Sur un autre Zetta, demandez le montage de **la même émission** : Audacity retrouve le live automatiquement.
    Sur le poste d'enregistrement, **Fichier > Ouvrir un montage live** permet aussi d'ouvrir plusieurs éditeurs.
    En dehors de Zetta, vous pouvez ouvrir le **WAV brut** de la session par **Fichier > Ouvrir**.

@@ -209,6 +209,7 @@ private:
     QElapsedTimer m_liveOpenWait;
     muse::io::paths_t m_pendingLivePaths;
     QString m_pendingLiveToken;
+    bool m_pendingLiveRecord = false;
     bool m_liveMontageSubmitted = false;
     bool m_liveRecordPublished = false;
     bool m_liveRecordAcknowledged = false;

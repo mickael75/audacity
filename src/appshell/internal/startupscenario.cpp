@@ -121,11 +121,6 @@ void StartupScenario::setQuickEditMode(bool quickEdit)
     m_quickEditMode = quickEdit;
 }
 
-bool StartupScenario::liveRecordMode() const
-{
-    return m_liveRecordMode;
-}
-
 void StartupScenario::setLiveRecordMode(bool liveRecord)
 {
     m_liveRecordMode = liveRecord;

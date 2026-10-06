@@ -69,7 +69,6 @@ public:
     void setRemoveMediaFilesAfterImport(bool remove) override;
     bool quickEditMode() const override;
     void setQuickEditMode(bool quickEdit) override;
-    bool liveRecordMode() const override;
     void setLiveRecordMode(bool liveRecord) override;
     void setQuickEditToken(const QString& token) override;
     void setStartupUrl(const QString& url) override;
