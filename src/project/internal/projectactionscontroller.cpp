@@ -921,6 +921,7 @@ void ProjectActionsController::importStartupMedia(const muse::actions::ActionDat
     const bool removeAfterImport = args.count() >= 2 ? args.arg<bool>(1) : false;
     const bool quickEdit = args.count() >= 3 ? args.arg<bool>(2) : false;
     const QString quickEditToken = args.count() >= 4 ? args.arg<QString>(3) : QString();
+    const bool liveRecord = args.count() >= 5 ? args.arg<bool>(4) : false;
 
     muse::io::paths_t filePaths;
     filePaths.reserve(files.size());
@@ -928,7 +929,7 @@ void ProjectActionsController::importStartupMedia(const muse::actions::ActionDat
         filePaths.emplace_back(file);
     }
 
-    Ret ret = processMediaFiles(filePaths, quickEdit, quickEditToken);
+    Ret ret = processMediaFiles(filePaths, quickEdit, quickEditToken, liveRecord);
     if (removeAfterImport) {
         for (const auto& filePath : filePaths) {
             fileSystem()->remove(filePath);
@@ -940,10 +941,16 @@ void ProjectActionsController::importStartupMedia(const muse::actions::ActionDat
     }
 }
 
-muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& paths, bool quickEdit, const QString& quickEditToken)
+muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& paths, bool quickEdit,
+                                                       const QString& quickEditToken, bool liveRecord)
 {
     if (paths.empty()) {
         return make_ret(Ret::Code::Cancel);
+    }
+    if (liveRecord && (paths.size() != 1 || LiveRecordMirror::liveRecordDir().isEmpty())) {
+        interactive()->error(muse::trc("project", "Live recording error"),
+                             muse::trc("project", "A live recording needs exactly one Zetta file and a configured shared live directory."));
+        return make_ret(Ret::Code::UnknownError);
     }
     if (m_liveOpenTimer.isActive() && paths != m_pendingLivePaths) {
         interactive()->error(muse::trc("project", "Live montage error"),
@@ -974,6 +981,12 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
         actualPaths.emplace_back(actualPath);
     }
 
+    if (liveRecord && !canQuickEdit(actualPaths.front())) {
+        interactive()->error(muse::trc("project", "Live recording error"),
+                             muse::trc("project", "The Zetta target format cannot be recorded to by quick edit."));
+        return make_ret(Ret::Code::UnknownError);
+    }
+
     //! NOTE: quick edit works on one source file per project: when several files are given (e.g. %F),
     //! open each extra file in its own quick edit window and keep the first one for this window
     if (quickEdit && actualPaths.size() > 1) {
@@ -993,7 +1006,7 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
         actualPaths.resize(1);
     }
 
-    if (quickEdit && actualPaths.size() == 1 && !LiveRecordMirror::liveRecordDir().isEmpty()) {
+    if (quickEdit && !liveRecord && actualPaths.size() == 1 && !LiveRecordMirror::liveRecordDir().isEmpty()) {
         const QString directory = LiveRecordMirror::liveRecordDir();
         if (!QDir().mkpath(directory)) {
             interactive()->error(muse::trc("project", "Live montage error"),
@@ -1038,7 +1051,7 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
     if (actualPaths.size() == 1 && needsOwnAudioEngine
         && (globalContext()->currentProject() || audioEngine()->isBusy()
             || !qEnvironmentVariableIsSet("AU_ALLOW_MULTIPLE_PROCESSES"))) {
-        if (!openLiveEditor(actualPaths.front().toQString(), quickEditToken)) {
+        if (!openLiveEditor(actualPaths.front().toQString(), quickEditToken, liveRecord)) {
             return make_ret(Ret::Code::UnknownError);
         }
         return make_ret(Ret::Code::Ok);
@@ -1054,6 +1067,9 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
         }
         if (isQuickEdit) {
             args << "--quick-edit";
+        }
+        if (liveRecord) {
+            args << "--live-record";
         }
         if (!quickEditToken.isEmpty()) {
             args << "--quick-edit-token" << quickEditToken;
@@ -1094,8 +1110,18 @@ muse::Ret ProjectActionsController::processMediaFiles(const muse::io::paths_t& p
 
     //! NOTE: the calling application may give a file to create (missing or empty, e.g. to record into it):
     //! quick edit then starts with an empty project, which is saved to that file
-    const bool isNewQuickEditFile = isQuickEdit && QFileInfo(actualPaths.front().toQString()).size() == 0;
+    const bool isNewQuickEditFile = isQuickEdit
+                                    && (liveRecord || QFileInfo(actualPaths.front().toQString()).size() == 0);
+    if (liveRecord) {
+        LOGI() << "live record requested for " << actualPaths.front().toQString();
+    }
     if (openedElsewhere) {
+        if (liveRecord) {
+            interactive()->error(muse::trc("project", "Live recording error"),
+                                 muse::trc("project", "This Zetta file is already open in Audacity. "
+                                                     "Close that session before starting a new recording."));
+            return make_ret(Ret::Code::UnknownError);
+        }
         toastService()->show(muse::trc("project", "Already open"),
                              muse::mtrc("project", "\"%1\" is also open in another Audacity window: what is saved last "
                                                    "replaces the file.").arg(actualPaths.front().toString()).toStdString(),
@@ -1734,13 +1760,16 @@ void ProjectActionsController::closeSavedWindow()
     });
 }
 
-bool ProjectActionsController::openLiveEditor(const QString& wavPath, const QString& token)
+bool ProjectActionsController::openLiveEditor(const QString& wavPath, const QString& token, bool liveRecord)
 {
     QStringList args { "--new-instance", "--session-type", "start-with-new", "--quick-edit",
                        "--import-media-file", wavPath };
     const QString directory = LiveRecordMirror::liveRecordDir();
     if (!directory.isEmpty()) {
         args << "--live-dir" << directory;
+    }
+    if (liveRecord) {
+        args << "--live-record";
     }
     const QString format = quickEditOption("--record-format", "AU_RECORD_FORMAT");
     if (!format.isEmpty()) {

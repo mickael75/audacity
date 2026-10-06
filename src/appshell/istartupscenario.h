@@ -51,6 +51,8 @@ public:
     virtual void setRemoveMediaFilesAfterImport(bool remove) = 0;
     virtual bool quickEditMode() const = 0;
     virtual void setQuickEditMode(bool quickEdit) = 0;
+    virtual bool liveRecordMode() const = 0;
+    virtual void setLiveRecordMode(bool liveRecord) = 0;
     virtual void setQuickEditToken(const QString& token) = 0;
     virtual void setStartupUrl(const QString& url) = 0;
 

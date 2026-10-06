@@ -104,7 +104,8 @@ private:
     void importFiles(const muse::actions::ActionData& args);
 
     void importStartupMedia(const muse::actions::ActionData& args);
-    muse::Ret processMediaFiles(const muse::io::paths_t& paths, bool quickEdit = false, const QString& quickEditToken = QString());
+    muse::Ret processMediaFiles(const muse::io::paths_t& paths, bool quickEdit = false,
+                                const QString& quickEditToken = QString(), bool liveRecord = false);
 
     muse::Ret openProject(const muse::io::path_t& path,
                           const muse::String& displayNameOverride = muse::String(), const muse::String& projectId = muse::String());
@@ -145,7 +146,7 @@ private:
                               const std::string& newFileFormat = {}, const muse::ValList& newFileEncoding = {});
     void finishLiveMontage();
     void openLiveMontage();
-    bool openLiveEditor(const QString& wavPath, const QString& token = {});
+    bool openLiveEditor(const QString& wavPath, const QString& token = {}, bool liveRecord = false);
     void cancelLiveSession();
     void pollLiveSession();
     void closeSavedWindow();

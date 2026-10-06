@@ -94,6 +94,7 @@ void GuiApp::doStartupScenario(const muse::modularity::ContextPtr& ctxId)
     startupScenario->setStartupMediaFiles(options->startup.mediaFiles);
     startupScenario->setRemoveMediaFilesAfterImport(options->startup.removeMediaFilesAfterImport);
     startupScenario->setQuickEditMode(options->startup.quickEdit);
+    startupScenario->setLiveRecordMode(options->startup.liveRecord);
     startupScenario->setQuickEditToken(options->startup.quickEditToken);
     setQuickEditEnvironment(*options);
     if (options->startup.startupUrl.has_value()) {
@@ -222,8 +223,9 @@ void GuiApp::onSecondInstanceArgs(const QStringList& args)
         for (const auto& file : parsed->startup.mediaFiles) {
             files << file.toQString();
         }
-        dispatcher->dispatch("project-import-startup-media",
-                             muse::actions::ActionData::make_arg3<QStringList, bool, bool>(
-                                 files, parsed->startup.removeMediaFilesAfterImport, parsed->startup.quickEdit));
+        muse::actions::ActionData data = muse::actions::ActionData::make_arg3<QStringList, bool, bool>(
+            files, parsed->startup.removeMediaFilesAfterImport, parsed->startup.quickEdit);
+        data.setArg<bool>(4, parsed->startup.liveRecord);
+        dispatcher->dispatch("project-import-startup-media", data);
     }
 }

@@ -121,6 +121,16 @@ void StartupScenario::setQuickEditMode(bool quickEdit)
     m_quickEditMode = quickEdit;
 }
 
+bool StartupScenario::liveRecordMode() const
+{
+    return m_liveRecordMode;
+}
+
+void StartupScenario::setLiveRecordMode(bool liveRecord)
+{
+    m_liveRecordMode = liveRecord;
+}
+
 void StartupScenario::setQuickEditToken(const QString& token)
 {
     m_quickEditToken = token;
@@ -231,6 +241,7 @@ void StartupScenario::onStartupPageOpened(StartupModeType modeType)
 
         ActionData data = ActionData::make_arg3<QStringList, bool, bool>(files, m_removeMediaFilesAfterImport, m_quickEditMode);
         data.setArg<QString>(3, m_quickEditToken);
+        data.setArg<bool>(4, m_liveRecordMode);
         dispatcher()->dispatch("project-import-startup-media", data);
         LOGI() << "startup media opened";
         return;

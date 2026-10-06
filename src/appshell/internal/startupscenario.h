@@ -69,6 +69,8 @@ public:
     void setRemoveMediaFilesAfterImport(bool remove) override;
     bool quickEditMode() const override;
     void setQuickEditMode(bool quickEdit) override;
+    bool liveRecordMode() const override;
+    void setLiveRecordMode(bool liveRecord) override;
     void setQuickEditToken(const QString& token) override;
     void setStartupUrl(const QString& url) override;
 
@@ -98,6 +100,7 @@ private:
     muse::io::paths_t m_startupMediaFiles;
     bool m_removeMediaFilesAfterImport = false;
     bool m_quickEditMode = false;
+    bool m_liveRecordMode = false;
     QString m_quickEditToken;
     QString m_startupUrl;
     bool m_startupCompleted = false;

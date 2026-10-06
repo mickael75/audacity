@@ -251,6 +251,9 @@ int main(int argc, char** argv)
                 //! the file back when this process exits. Without a running Audacity, this process does the quick edit.
                 quickEditToken = QUuid::createUuid().toString(QUuid::WithoutBraces);
                 forwardedArgs << "--quick-edit" << "--quick-edit-token" << quickEditToken;
+                if (startup.liveRecord) {
+                    forwardedArgs << "--live-record";
+                }
                 if (!startup.liveRecordDir.isEmpty()) {
                     forwardedArgs << "--live-dir" << startup.liveRecordDir;
                 }

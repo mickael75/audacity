@@ -79,12 +79,15 @@ void CommandLineParser::init()
                                           "Edit the given media file directly: saving exports the changes back to its original path"
                                           " and location, keeping the Audacity project data in a temporary directory (like an"
                                           " external \"Edit In\" tool, e.g. launched with %f/%F)"));
+    m_parser.addOption(QCommandLineOption("live-record",
+                                          "With --live-dir, start a new recording into the given quick-edit target, "
+                                          "even if it already exists; the previous file is backed up on save"));
     m_parser.addOption(QCommandLineOption("live-dir",
-                                          "With --quick-edit of a new file: also write the recording, while it runs, to a"
-                                          " growing WAV file of this (shared) directory. Or set AU_LIVE_RECORD_DIR",
+                                          "With --quick-edit recording: also write the audio, while it runs, to a growing WAV"
+                                          " file in this (shared) directory. Required by --live-record. Or set AU_LIVE_RECORD_DIR",
                                           "directory"));
     m_parser.addOption(QCommandLineOption("record-format",
-                                          "With --quick-edit of a new file: its format, wav16 / wav24 / wav32f / mp2-<kbps> /"
+                                          "Format of a new quick-edit recording: wav16 / wav24 / wav32f / mp2-<kbps> /"
                                           " mp3-<kbps>. Or set AU_RECORD_FORMAT", "format"));
     m_parser.addOption(QCommandLineOption("backup-dir",
                                           "With --quick-edit: where the backups of the edited files are kept (5 days)."
@@ -116,7 +119,7 @@ void CommandLineParser::init()
 //! end, when they don't each name an existing file (several files) and the joined path is in an existing directory.
 static QStringList joinSplitQuickEditPath(const QStringList& args)
 {
-    if (!args.contains("--quick-edit")) {
+    if (!args.contains("--quick-edit") && !args.contains("--live-record")) {
         return args;
     }
 
@@ -229,6 +232,10 @@ void CommandLineParser::parse(int argc, char** argv)
     }
 
     if (m_parser.isSet("quick-edit")) {
+        m_options->startup.quickEdit = true;
+    }
+    if (m_parser.isSet("live-record")) {
+        m_options->startup.liveRecord = true;
         m_options->startup.quickEdit = true;
     }
     m_options->startup.newInstance = m_parser.isSet("new-instance");
