@@ -23,6 +23,7 @@
 #define AU_PROJECT_IPROJECTFILESCONTROLLER_H
 
 #include <functional>
+#include <QString>
 
 #include "modularity/imoduleinterface.h"
 #include "types/ret.h"
@@ -33,6 +34,12 @@
 class QUrl;
 
 namespace au::project {
+struct LiveSessionInfo {
+    QString wavPath;
+    QString role;
+    QString participantId;
+    bool sharedMontage = false;
+};
 class IProjectFilesController : MODULE_CONTEXT_INTERFACE
 {
     INTERFACE_ID(IProjectFilesController)
@@ -51,6 +58,7 @@ public:
 
     virtual const ProjectBeingDownloaded& projectBeingDownloaded() const = 0;
     virtual muse::async::Notification projectBeingDownloadedChanged() const = 0;
+    virtual LiveSessionInfo liveSessionInfo() const { return {}; }
 };
 }
 

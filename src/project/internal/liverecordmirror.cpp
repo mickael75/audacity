@@ -114,11 +114,10 @@ bool LiveRecordMirror::start(const IAudacityProjectPtr& project, const muse::io:
     m_stopping = false;
     m_started = true;
     m_finished = false;
-    m_recordingPublished = false;
     m_failed = false;
     m_sinceLastCopy.start();
 
-    if (!writeStatus("ready") || !m_session->publishTarget(m_wavPath, error)) {
+    if (!writeStatus("recording") || !m_session->publishTarget(m_wavPath, error)) {
         LOGE() << "live recording: could not register Zetta target: " << error;
         writeStatus("error");
         m_started = false;
@@ -131,13 +130,6 @@ bool LiveRecordMirror::start(const IAudacityProjectPtr& project, const muse::io:
     m_writer = std::thread(&LiveRecordMirror::writerLoop, this, m_wavPath);
 
     record()->recordPositionChanged().onReceive(this, [this](const muse::secs_t&) {
-        if (!m_recordingPublished) {
-            if (!writeStatus("recording")) {
-                m_failed = true;
-                return;
-            }
-            m_recordingPublished = true;
-        }
         copyNewAudio(false);
     });
 

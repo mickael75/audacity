@@ -106,7 +106,7 @@ const UiActionList ProjectUiActions::m_actions = {
              au::context::UiCtxAny,
              au::context::CTX_ANY,
              TranslatableString("action", "Montage finished"),
-             TranslatableString("action_description", "Freeze the final live montage and send it to Zetta after recording stops")
+             TranslatableString("action_description", "Finish this montage; in shared mode, synchronize and leave this editor session")
              ),
     UiAction("live-montage-open",
              au::context::UiCtxAny,

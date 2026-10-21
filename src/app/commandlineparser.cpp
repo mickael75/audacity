@@ -82,6 +82,8 @@ void CommandLineParser::init()
     m_parser.addOption(QCommandLineOption("live-record",
                                           "With --live-dir, start a new recording into the given quick-edit target, "
                                           "even if it already exists; the previous file is backed up on save"));
+    m_parser.addOption(QCommandLineOption("shared-montage",
+                                          "Experimental: share live montage changes between workstations using --live-dir"));
     m_parser.addOption(QCommandLineOption("live-dir",
                                           "With --quick-edit recording: also write the audio, while it runs, to a growing WAV"
                                           " file in this (shared) directory. Required by --live-record. Or set AU_LIVE_RECORD_DIR",
@@ -237,6 +239,9 @@ void CommandLineParser::parse(int argc, char** argv)
     if (m_parser.isSet("live-record")) {
         m_options->startup.liveRecord = true;
         m_options->startup.quickEdit = true;
+    }
+    if (m_parser.isSet("shared-montage")) {
+        qputenv("AU_SHARED_MONTAGE", "1");
     }
     m_options->startup.newInstance = m_parser.isSet("new-instance");
 

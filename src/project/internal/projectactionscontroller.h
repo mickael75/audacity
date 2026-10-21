@@ -42,6 +42,8 @@
 #include "project/iaudacityproject.h"
 #include "liverecordmirror.h"
 #include "liverecordfollower.h"
+#include "livesessionpresence.h"
+#include <future>
 #include "multiwindows/imultiwindowsprovider.h"
 
 namespace au::project {
@@ -91,11 +93,13 @@ public:
 
     const ProjectBeingDownloaded& projectBeingDownloaded() const override;
     muse::async::Notification projectBeingDownloadedChanged() const override;
+    LiveSessionInfo liveSessionInfo() const override;
 
     bool isProjectOpened(const muse::io::path_t& projectPath) const;
     muse::async::Channel<muse::actions::ActionCodeList> actionEnabledChanged() const;
 
 private:
+    void updateLivePresence();
     project::IAudacityProjectPtr currentProject() const;
 
     void newProject();
@@ -151,6 +155,7 @@ private:
     void pollLiveSession();
     void closeSavedWindow();
     IAudacityProjectPtr loadLiveMontage(const QString& path);
+    bool finalizeSharedMontage(const QString& wavPath);
     std::string formatNameForExtension(const std::string& extension) const;
     bool canQuickEdit(const muse::io::path_t& sourcePath) const;
     std::string formatNameForContents(const muse::io::path_t& path) const;
@@ -213,6 +218,12 @@ private:
     bool m_liveMontageSubmitted = false;
     bool m_liveRecordPublished = false;
     bool m_liveRecordAcknowledged = false;
+    bool m_autoLiveMontageOpened = false;
+    LiveSessionPresence m_livePresence;
+    // Declared after the writer so destruction waits before releasing it.
+    std::future<void> m_livePresenceWork;
+    bool m_hadLivePresence = false;
+    QTimer m_livePresenceTimer;
     bool m_liveSessionBusy = false;
 
     //! NOTE: a quick edit handed off by another Audacity process (which the launching application waits for):

@@ -18649,6 +18649,94 @@ Veuillez supprimer la protection en écriture en vérifiant les propriétés du 
         <source>Cloud project indicator</source>
         <translation>Indicateur de projet cloud</translation>
     </message>
+    <message>
+        <source>Recording</source>
+        <translation>Enregistrement</translation>
+    </message>
+    <message>
+        <source>Ready for REC</source>
+        <translation>Prêt pour REC</translation>
+    </message>
+    <message>
+        <source>Recording stopped</source>
+        <translation>REC arrêté</translation>
+    </message>
+    <message>
+        <source>Local montage — sharing paused</source>
+        <translation>Montage local — synchronisation suspendue</translation>
+    </message>
+    <message>
+        <source>Montage submitted</source>
+        <translation>Montage envoyé</translation>
+    </message>
+    <message>
+        <source>Montage frozen</source>
+        <translation>Montage figé</translation>
+    </message>
+    <message>
+        <source>Live session error</source>
+        <translation>Erreur de session live</translation>
+    </message>
+    <message>
+        <source>Editing</source>
+        <translation>Montage</translation>
+    </message>
+    <message>
+        <source>Workstations unavailable</source>
+        <translation>Postes indisponibles</translation>
+    </message>
+    <message>
+        <source>The shared directory is unavailable. Workstation presence cannot be verified.</source>
+        <translation>Le dossier partagé est indisponible. La présence des postes ne peut pas être vérifiée.</translation>
+    </message>
+    <message>
+        <source> (this window)</source>
+        <translation> (cette fenêtre)</translation>
+    </message>
+    <message>
+        <source> (independent montage)</source>
+        <translation> (montage indépendant)</translation>
+    </message>
+    <message>
+        <source>Montage: 1 workstation</source>
+        <translation>Montage : 1 poste</translation>
+    </message>
+    <message>
+        <source>Montage: %1 workstations</source>
+        <translation>Montage : %1 postes</translation>
+    </message>
+    <message>
+        <source>REC: %1 · %2</source>
+        <translation>REC : %1 · %2</translation>
+    </message>
+    <message>
+        <source>Ready for REC · %1</source>
+        <translation>Prêt pour REC · %1</translation>
+    </message>
+    <message>
+        <source>REC stopped · %1</source>
+        <translation>REC arrêté · %1</translation>
+    </message>
+    <message>
+        <source>Shared montage</source>
+        <translation>Montage partagé</translation>
+    </message>
+    <message>
+        <source>Live session</source>
+        <translation>Session live</translation>
+    </message>
+    <message>
+        <source>Waiting for workstation presence…</source>
+        <translation>En attente des postes…</translation>
+    </message>
+    <message>
+        <source>Presence is refreshed automatically. Closed or disconnected windows disappear after a short delay.</source>
+        <translation>La présence est actualisée automatiquement. Les fenêtres fermées ou déconnectées disparaissent après un court délai.</translation>
+    </message>
+    <message>
+        <source>Workstations in this live session</source>
+        <translation>Postes présents sur cette session live</translation>
+    </message>
 </context>
 <context>
     <name>project-file-io</name>
@@ -22959,6 +23047,26 @@ Template for clip name generation on inserting new empty clip</extracomment>
         <location filename="../../au3/libraries/au3-xml/XMLFileReader.cpp" line="173"/>
         <source>Could not parse XML</source>
         <translation>Impossible d’analyser le XML</translation>
+    </message>
+</context>
+
+<context>
+    <name>project</name>
+    <message>
+        <source>Stop recording and leave every montage window. Keep this recording window open until the final montage is written to Zetta.</source>
+        <translation>Arrêtez le REC et quittez toutes les fenêtres de montage. Gardez la fenêtre d’enregistrement ouverte jusqu’à l’envoi du montage final à Zetta.</translation>
+    </message>
+    <message>
+        <source>New audio is added automatically to the montage, and changes are shared with the other workstations. Close this montage window to leave the session. Zetta is updated after recording stops and every editor has left.</source>
+        <translation>Le nouvel audio s’ajoute automatiquement au montage et les modifications sont partagées avec les autres postes. Fermez cette fenêtre de montage pour quitter la session. Zetta est mis à jour après l’arrêt du REC et le départ de tous les monteurs.</translation>
+    </message>
+</context>
+
+<context>
+    <name>action_description</name>
+    <message>
+        <source>Finish this montage; in shared mode, synchronize and leave this editor session</source>
+        <translation>Terminer ce montage ; en mode partagé, synchroniser et quitter cette fenêtre de montage</translation>
     </message>
 </context>
 </TS>

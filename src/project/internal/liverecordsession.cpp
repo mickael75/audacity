@@ -12,6 +12,7 @@
 #include <QJsonObject>
 #include <QLockFile>
 #include <QSaveFile>
+#include <QUuid>
 
 #include "framework/global/log.h"
 
@@ -66,6 +67,114 @@ bool audioHash(const QString& path, QString& hash, QString& error)
 }
 }
 
+
+namespace {
+QString participationPath(const QString& wavPath)
+{
+    return basePath(wavPath) + ".editors.json";
+}
+
+bool readParticipation(const QString& wavPath, QJsonObject& object, QString& error)
+{
+    if (!QFile::exists(participationPath(wavPath))) {
+        object = { { "version", 1 }, { "editors", QJsonObject {} }, { "sealed", false } };
+        return true;
+    }
+    if (!readJson(participationPath(wavPath), object, error)) {
+        return false;
+    }
+    if (!object.value("editors").isObject() || !object.value("sealed").isBool()) {
+        error = "Invalid montage participation registry.";
+        return false;
+    }
+    return true;
+}
+}
+
+bool LiveRecordSession::joinMontage(const QString& wavPath, const QString& editorId,
+                                   const QString& station, QString& error)
+{
+    error.clear();
+    QLockFile lock(basePath(wavPath) + ".shared-montage.lock");
+    lock.setStaleLockTime(0);
+    if (!lock.tryLock(0)) {
+        error = "The shared montage is busy. Try opening it again.";
+        return false;
+    }
+    State state;
+    QJsonObject registry;
+    if (QUuid(editorId).isNull() || !readState(wavPath, state, error) || state == State::Failed
+        || !readParticipation(wavPath, registry, error)) {
+        if (error.isEmpty()) { error = "Cannot join this live montage."; }
+        return false;
+    }
+    if (registry.value("sealed").toBool() || QFile::exists(submissionPath(wavPath))) {
+        error = "All editors have left and the recording is finished. The montage is being published to Zetta.";
+        return false;
+    }
+    auto editors = registry.value("editors").toObject();
+    editors.insert(editorId, station);
+    registry.insert("editors", editors);
+    return writeJson(participationPath(wavPath), registry, error);
+}
+
+bool LiveRecordSession::leaveMontage(const QString& wavPath, const QString& editorId,
+                                    const QString& expectedRevision, QString& error)
+{
+    error.clear();
+    QLockFile lock(basePath(wavPath) + ".shared-montage.lock");
+    lock.setStaleLockTime(0);
+    if (!lock.tryLock(0)) {
+        error = "Another workstation is updating the montage. Try leaving again.";
+        return false;
+    }
+    QJsonObject registry;
+    MontageSnapshot snapshot;
+    if (!readParticipation(wavPath, registry, error) || !readMontage(wavPath, snapshot, error)) {
+        return false;
+    }
+    if (registry.value("sealed").toBool() || snapshot.revision.isEmpty() || snapshot.revision != expectedRevision) {
+        error = "The shared montage changed. Synchronize it before leaving the session.";
+        return false;
+    }
+    auto editors = registry.value("editors").toObject();
+    if (!editors.contains(editorId)) {
+        error = "This window is not registered in the montage session.";
+        return false;
+    }
+    editors.remove(editorId);
+    registry.insert("editors", editors);
+    return writeJson(participationPath(wavPath), registry, error);
+}
+
+bool LiveRecordSession::sealMontage(const QString& wavPath, MontageSnapshot& snapshot, QString& error)
+{
+    error.clear();
+    snapshot = {};
+    QLockFile lock(basePath(wavPath) + ".shared-montage.lock");
+    lock.setStaleLockTime(0);
+    if (!lock.tryLock(0)) { return false; }
+    State state;
+    QJsonObject registry;
+    if (!readState(wavPath, state, error) || !readParticipation(wavPath, registry, error)) {
+        return false;
+    }
+    if (state == State::Failed) { error = "The recording failed."; return false; }
+    if (state != State::Done || !registry.value("editors").toObject().isEmpty()) { return false; }
+    // No native montage means no editor has successfully published yet.
+    if (!readMontage(wavPath, snapshot, error) || snapshot.revision.isEmpty()) { return false; }
+    if (registry.value("sealed").toBool()) {
+        if (registry.value("revision").toString() != snapshot.revision) {
+            error = "The sealed montage revision changed.";
+            return false;
+        }
+        return true; // Retrying a failed render/export uses the same immutable revision.
+    }
+    registry.insert("sealed", true);
+    registry.insert("revision", snapshot.revision);
+    return writeJson(participationPath(wavPath), registry, error);
+}
+
 QString LiveRecordSession::targetKey(const QString& target)
 {
     QString path = target;
@@ -74,6 +183,136 @@ QString LiveRecordSession::targetKey(const QString& target)
     path = QDir::cleanPath(windowsPath ? path : QFileInfo(path).absoluteFilePath());
     path = path.normalized(QString::NormalizationForm_C);
     return windowsPath ? path.toCaseFolded() : path;
+}
+
+QString LiveRecordSession::sharedMontagePath(const QString& wavPath)
+{
+    return basePath(wavPath) + ".shared-montage.json";
+}
+
+bool LiveRecordSession::readMontage(const QString& wavPath, MontageSnapshot& snapshot, QString& error,
+                                  const QString& verifiedRevision)
+{
+    error.clear();
+    snapshot = {};
+    const QString manifest = sharedMontagePath(wavPath);
+    if (!QFile::exists(manifest)) {
+        return true;
+    }
+    QJsonObject object;
+    if (!readJson(manifest, object, error)) {
+        return false;
+    }
+    const QString revision = object.value("revision").toString();
+    const QUuid uuid(revision);
+    if (uuid.isNull() || uuid.toString(QUuid::WithoutBraces) != revision
+        || !object.value("metadata").isObject()) {
+        error = "Invalid shared montage manifest: " + manifest;
+        return false;
+    }
+    const QString projectPath = basePath(wavPath) + ".montage-" + revision + ".aup3";
+    QString hash;
+    if (revision != verifiedRevision
+        && (!audioHash(projectPath, hash, error) || hash != object.value("sha256").toString())) {
+        error = "The shared montage snapshot is missing or damaged: " + projectPath;
+        return false;
+    }
+    snapshot = { revision, projectPath, object.value("metadata").toObject() };
+    return true;
+}
+
+LiveRecordSession::MontageUpdate LiveRecordSession::publishMontage(
+    const QString& wavPath, const QString& expectedRevision, const QString& localProject,
+    const QJsonObject& metadata, MontageSnapshot& snapshot, QString& error)
+{
+    error.clear();
+    QLockFile lock(basePath(wavPath) + ".shared-montage.lock");
+    lock.setStaleLockTime(0);
+    if (!lock.tryLock(0)) {
+        error = "Another workstation is updating the shared montage. Try again.";
+        return MontageUpdate::Error;
+    }
+    if (QFile::exists(submissionPath(wavPath))) {
+        error = "The final montage is already frozen.";
+        return MontageUpdate::Frozen;
+    }
+    QJsonObject registry;
+    if (!readParticipation(wavPath, registry, error)) { return MontageUpdate::Error; }
+    if (registry.value("sealed").toBool()) {
+        error = "The shared montage session has finished.";
+        return MontageUpdate::Frozen;
+    }
+    State state;
+    if (!readState(wavPath, state, error) || state == State::Failed) {
+        if (error.isEmpty()) {
+            error = "The recording failed; the shared montage was not updated.";
+        }
+        return MontageUpdate::Error;
+    }
+    if (!readMontage(wavPath, snapshot, error)) {
+        return MontageUpdate::Error;
+    }
+    if (snapshot.revision != expectedRevision) {
+        error = "Another workstation has changed the montage.";
+        return MontageUpdate::Conflict;
+    }
+    const QString revision = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const QString targetPath = basePath(wavPath) + ".montage-" + revision + ".aup3";
+    QFile source(localProject);
+    QSaveFile target(targetPath);
+    if (!source.open(QIODevice::ReadOnly) || source.size() == 0 || !target.open(QIODevice::WriteOnly)) {
+        error = "Cannot stage shared montage: " + source.errorString() + "; " + target.errorString();
+        return MontageUpdate::Error;
+    }
+    while (!source.atEnd()) {
+        const QByteArray bytes = source.read(1024 * 1024);
+        if (bytes.isEmpty() || target.write(bytes) != bytes.size()) {
+            error = "Cannot copy shared montage: " + source.errorString() + "; " + target.errorString();
+            return MontageUpdate::Error;
+        }
+    }
+    if (!target.commit()) {
+        error = target.errorString();
+        return MontageUpdate::Error;
+    }
+    QString hash;
+    if (!audioHash(targetPath, hash, error)
+        || !writeJson(sharedMontagePath(wavPath),
+                      { { "version", 1 }, { "revision", revision }, { "sha256", hash }, { "metadata", metadata } }, error)) {
+        QFile::remove(targetPath);
+        return MontageUpdate::Error;
+    }
+    snapshot = { revision, targetPath, metadata };
+    return MontageUpdate::Published;
+}
+
+bool LiveRecordSession::submitMontage(const QString& wavPath, const QString& expectedRevision,
+                                    const QString& renderedPath, QString& error)
+{
+    QLockFile lock(basePath(wavPath) + ".shared-montage.lock");
+    lock.setStaleLockTime(0);
+    if (!lock.tryLock(0)) {
+        error = "Another workstation is updating the montage. Try again.";
+        return false;
+    }
+    MontageSnapshot snapshot;
+    if (!readMontage(wavPath, snapshot, error)) {
+        return false;
+    }
+    if (snapshot.revision.isEmpty() || snapshot.revision != expectedRevision) {
+        error = "The shared montage changed. Review the latest version before finishing.";
+        return false;
+    }
+    QJsonObject registry;
+    State state;
+    if (!readParticipation(wavPath, registry, error) || !readState(wavPath, state, error)) { return false; }
+    if (state != State::Done || !registry.value("sealed").toBool()
+        || !registry.value("editors").toObject().isEmpty()
+        || registry.value("revision").toString() != expectedRevision) {
+        error = "Stop recording and wait for every editor to leave before publishing the montage.";
+        return false;
+    }
+    return submitUnlocked(wavPath, renderedPath, error);
 }
 
 QString LiveRecordSession::targetIndex(const QString& directory, const QString& target)
@@ -217,9 +456,7 @@ bool LiveRecordSession::readState(const QString& wavPath, State& state, QString&
         return false;
     }
     const QString status = object.value("status").toString();
-    if (status == "ready") {
-        state = State::Ready;
-    } else if (status == "recording") {
+    if (status == "recording") {
         state = State::Recording;
     } else if (status == "done") {
         state = State::Done;
@@ -233,6 +470,21 @@ bool LiveRecordSession::readState(const QString& wavPath, State& state, QString&
 }
 
 bool LiveRecordSession::submit(const QString& wavPath, const QString& renderedPath, QString& error)
+{
+    QLockFile lock(basePath(wavPath) + ".shared-montage.lock");
+    lock.setStaleLockTime(0);
+    if (!lock.tryLock(0)) {
+        error = "Another workstation is updating the montage. Try again.";
+        return false;
+    }
+    if (QFile::exists(sharedMontagePath(wavPath)) || QFile::exists(participationPath(wavPath))) {
+        error = "This recording uses a shared montage. Reopen with shared montage enabled before finishing.";
+        return false;
+    }
+    return submitUnlocked(wavPath, renderedPath, error);
+}
+
+bool LiveRecordSession::submitUnlocked(const QString& wavPath, const QString& renderedPath, QString& error)
 {
     error.clear();
     QLockFile lock(basePath(wavPath) + ".montage.lock");

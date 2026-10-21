@@ -15,15 +15,14 @@ Dans la configuration de l'éditeur externe de Zetta :
 | Programme | Le chemin d'Audacity, par exemple `C:\Program Files\Audacity\Audacity.exe` |
 | Arguments (même valeur sur les postes Enregistrer et Monter) | `--live-record --live-dir "\\SERVEUR\LiveRec" "%f"` |
 
-Ligne complète avec toutes les options :
+Ajoutez les mêmes options facultatives aux deux actions si nécessaire :
 ```
 --quick-edit --live-dir "\\SERVEUR\LiveRec" --record-format mp2-256 --backup-dir "D:\Sauvegardes Audacity" %f
 ```
 `--live-record` prépare une session sans lancer la capture : clique sur **Enregistrer** dans Audacity
 quand tu es prêt. Si une session correspond déjà au chemin Zetta transmis, Audacity ouvre son WAV live
-pour montage, sans démarrer une deuxième capture.
-Si aucune session n'existe et que Zetta transmet un fichier déjà enregistré, Audacity l'ouvre
-directement en quick-edit, comme avant. Un fichier vide ou inexistant prépare une nouvelle session.
+pour montage, sans démarrer une deuxième capture. Si aucune session n'existe et que Zetta transmet
+un fichier déjà enregistré, Audacity l'ouvre directement en quick-edit, comme avant.
 
 À respecter :
 - **`%f` à la fin**, après toutes les options.
@@ -40,7 +39,7 @@ Toutes les options sont **facultatives**, sauf `--quick-edit` ou `--live-record`
 | Option | Variable d'environnement | Rôle | Sans l'option |
 |---|---|---|---|
 | `--quick-edit` | | Ouvre un fichier existant pour montage. À utiliser seul ou avec `--live-dir`. | Audacity normal |
-| `--live-record` | | Prépare une capture à démarrer avec le bouton **Enregistrer**, ou rejoint la session du même fichier Zetta si elle existe déjà. Implique `--quick-edit` et exige `--live-dir`. | Non applicable |
+| `--live-record` | | Démarre une capture, ou rejoint la session du même fichier Zetta si elle est déjà en cours. Implique `--quick-edit` et exige `--live-dir`. | Non applicable |
 | `--live-dir "<dossier>"` | `AU_LIVE_RECORD_DIR` | Pendant un enregistrement, copie le son en direct dans un WAV de ce dossier réseau (voir [Enregistrement live](#enregistrement-live)) | Pas de copie live |
 | `--record-format <format>` | `AU_RECORD_FORMAT` | Format des **nouveaux** fichiers (enregistrements) | WAV, ou MP2 si le nom finit par `.mpg` |
 | `--backup-dir "<dossier>"` | `AU_QUICK_EDIT_BACKUP_DIR` | Dossier des sauvegardes | `%TEMP%\Audacity Quick Edit Backups` |
@@ -161,7 +160,7 @@ Si l'émission vient de démarrer, l'éditeur attend jusqu'à 30 secondes les pr
 Un verrou partagé empêche deux postes d'enregistrer simultanément dans **le même fichier Zetta**.
 Si ce fichier est déjà associé à une émission live, l'ouverture devient un montage de cette émission.
 
-Les éditeurs suivent **le même enregistrement**, mais ne modifient pas simultanément la même base
+Sans l'option expérimentale `--shared-montage`, les éditeurs suivent **le même enregistrement**, mais ne modifient pas simultanément la même base
 de projet `.aup3` : les montages sont indépendants, pas une timeline collaborative.
 Comme convenu, **un seul montage final par émission** est transmis à Zetta.
 
@@ -170,12 +169,140 @@ Pour identifier une émission entre postes, utilisez le même chemin réseau, id
 Un chemin UNC et un lecteur réseau mappé (`Z:\...`) ne sont pas automatiquement considérés comme identiques ;
 des copies temporaires différentes ne peuvent pas être associées sans identifiant Zetta supplémentaire.
 
+### Montage partagé entre postes — option expérimentale
+
+L'option `--shared-montage` (ou `AU_SHARED_MONTAGE=1`) ajoute une timeline commune
+au fonctionnement live. **Cette implémentation n'a pas encore été compilée ni validée
+sur deux postes Zetta dans cet environnement.** Gardez le mode actuel pour la production
+tant que les essais ci-dessous ne sont pas terminés.
+
+Configurez les postes participant au même montage avec :
+
+```text
+"C:\chemin\Audacity.exe" --live-record --shared-montage --live-dir "\\SERVEUR\AudacityLive" "%f"
+```
+
+**La même configuration s'applique à tous les postes.** Aucun ordinateur n'a un rôle
+permanent d'enregistreur ou de monteur. Le rôle est déterminé pour chaque fichier Zetta :
+ouvrir un nouveau fichier sans session active permet de lancer le REC ; ouvrir un fichier
+dont la session existe rejoint son montage. Un poste qui monte une émission peut donc
+enregistrer la suivante, et celui qui a enregistré peut ensuite rejoindre un montage.
+Les ouvertures supplémentaires utilisent des processus Audacity indépendants.
+
+Par exemple, le poste A peut enregistrer l'émission 1 pendant que B la monte, puis B
+enregistrer l'émission 2 pendant que A la monte. A peut aussi monter l'émission 1 pendant
+son propre REC grâce à la fenêtre de montage ouverte automatiquement. Pour chaque session,
+la fenêtre qui détient la capture conserve le fichier Zetta d'origine et réalise l'export
+final ; changer de poste de montage ne change pas le destinataire de cet export.
+
+#### Affichage des postes présents dans Audacity
+
+Pour une session live, la barre d'état comporte un indicateur cliquable, par exemple
+**REC : Studio A · Montage : 2 postes**. Le point rouge indique une présence en REC ;
+le bleu correspond à la session de montage et l'orange à un partage indisponible.
+Un clic affiche les noms des postes et le rôle de chaque fenêtre : prêt pour REC,
+enregistrement, montage, montage local avec synchronisation suspendue, montage envoyé,
+montage figé ou erreur. La fenêtre actuelle est identifiée dans la liste.
+
+Les noms sont ceux des ordinateurs. Pour afficher un nom plus parlant, définissez
+`AU_STATION_NAME` sur chaque poste avant de lancer Audacity, par exemple `Studio A`
+ou `Montage 2`. Un poste peut apparaître à la fois en REC et en montage si deux de
+ses fenêtres participent à la session. Le compteur de montage compte les postes
+distincts, pas le nombre de fenêtres. L'indicateur est masqué pour un projet ordinaire.
+
+La présence est publiée toutes les deux secondes dans le dossier `<session>.presence`.
+Les lectures et les écritures de présence sont réalisées en arrière-plan pour qu'un
+partage lent ne bloque pas l'interface pendant le REC ou le montage.
+Une fermeture normale retire la fenêtre de la liste au prochain rafraîchissement.
+Un signal inchangé expire après environ quinze secondes d'observation, notamment après une
+panne. Le délai est mesuré avec l'horloge monotone du lecteur : les horloges des postes
+n'ont pas besoin d'être identiques. À l'ouverture de la liste, une ancienne présence
+peut apparaître pendant ce délai initial. Cet affichage est informatif ; les verrous
+de session continuent de décider qui possède le REC et l'export Zetta.
+
+Les tests `LiveSessionPresenceTests` couvrent le changement de rôle, l'expiration et
+la reprise des présences, plusieurs fenêtres sur un même poste, la fermeture, la
+séparation des émissions et les fichiers de présence invalides. Comme le montage
+partagé, cet affichage reste à compiler et à vérifier dans l'application sur deux postes.
+
+Le chemin audio Zetta transmis par `%f` doit être identique entre les postes,
+comme dans le mode live existant. Cette option ne crée pas un identifiant commun
+pour des fichiers temporaires Zetta portant des chemins différents.
+
+1. Créez le nouveau fichier dans Zetta et ouvrez-le. Audacity réserve la session ;
+   dans ce mode, cliquez sur **REC** pour commencer.
+2. Dès que les premiers échantillons sont disponibles, une fenêtre de montage
+   indépendante s'ouvre automatiquement sur le poste qui enregistre. Elle possède
+   son propre moteur audio ; la capture continue dans la fenêtre d'enregistrement.
+3. Ouvrez le même fichier depuis un autre Zetta avec les mêmes options. Cet Audacity
+   rejoint le montage partagé. L'audio nouveau est ajouté automatiquement après
+   les passages déjà montés. Couper, déplacer ou supprimer le clip de fin ne remet
+   pas les anciennes coupes à zéro : l'arrivée suivante continue dans un nouveau clip.
+4. Les changements de montage sont publiés et recherchés à intervalles d'une seconde.
+   L'arrivée de l'audio reste vérifiée toutes les deux secondes. Les temps réels
+   dépendent de la durée du projet et du débit du partage. Une réception de montage
+   attend la fin d'un déplacement en cours ou de la lecture audio.
+5. Si deux postes modifient une même version avant de recevoir le changement de l'autre,
+   le premier publié est conservé. Le second montage est sauvegardé dans un fichier
+   `.conflict-<id>.aup3`, puis Audacity propose de charger la version commune. Annuler
+   conserve le travail local et suspend sa synchronisation ; rouvrir depuis Zetta
+   permet de rejoindre à nouveau la version partagée. **Il n'y a pas de fusion
+   automatique des modifications concurrentes.**
+6. Le montage reste modifiable pendant le REC et après son arrêt tant qu'une fenêtre
+   de montage participe à la session. Fermer une fenêtre de montage, ou choisir
+   **Montage terminé** dans cette fenêtre, synchronise ses dernières modifications
+   puis quitte uniquement cette fenêtre. Un conflit non résolu ou une erreur du
+   partage empêche le départ ; les autres monteurs et le REC continuent.
+7. Le poste d'enregistrement attend **l'arrêt du REC et le départ de toutes les fenêtres
+   de montage**. Il verrouille alors la version commune, conserve la sauvegarde brute
+   et exporte dans le fichier Zetta avec le circuit actuel. Les formats, sauvegardes
+   et confirmations Zetta restent ceux du mode existant. Gardez la fenêtre de capture
+   ouverte jusqu'à cet export ; elle se ferme après confirmation de publication.
+8. Si tous les monteurs quittent pendant le REC, la capture continue. Un monteur peut
+   rejoindre à nouveau tant que la session n'est pas clôturée. À la fin du REC, le
+   poste d'enregistrement complète la dernière version avec les échantillons non
+   encore reçus, sans rétablir les coupes précédentes, puis publie le résultat.
+
+Le brut n'apparaît pas comme une piste à modifier dans les éditeurs partagés :
+il est conservé à part afin que les coupes et Annuler/Rétablir ne touchent pas le REC.
+Ctrl+S conserve son rôle de sauvegarde d'un brouillon audio ; il ne remplace pas la
+clôture collective et n'écrit pas directement dans le fichier Zetta depuis un éditeur.
+
+Les postes échangent des **copies immuables** de projets natifs :
+`.shared-montage.json` désigne la version courante, avec son empreinte SHA-256,
+et `.montage-<version>.aup3` contient la copie correspondante. Chaque poste charge
+une copie locale et transfère les blocs audio dans sa propre base de projet.
+Le fichier `.montage.json` reste exclusivement le rendu final utilisé par Zetta.
+Le registre `.editors.json` garde les participations jusqu'à leur départ explicite,
+puis scelle la révision sous le même verrou que les arrivées et les modifications.
+L'expiration de l'indicateur de présence ne libère pas cette participation : une panne
+ou une coupure réseau ne doit pas publier un travail inachevé. Une fenêtre qui plante
+avant son départ laisse donc la clôture en attente ; la récupération de cette
+participation doit être effectuée avant l'export (pas de retrait automatique dans
+ce prototype). La récupération ergonomique après panne reste à prévoir avant production.
+Les anciennes copies sont conservées pour les lecteurs en cours et la récupération ;
+leur taille cumulée peut être importante. Ce prototype copie le projet complet lors
+des changements : mesurer la fluidité et l'espace disque sur des émissions longues
+avant tout déploiement.
+
+Essais à effectuer avec une compilation complète : ouverture depuis deux postes,
+montage pendant le REC, arrivée de l'audio après coupe du clip de fin, Annuler/Rétablir
+pendant l'arrivée du direct, lecture pendant une modification distante, conflit entre
+deux éditeurs, perte du partage, puis départs avant/après l'arrêt du REC et vérification
+du fichier final dans Zetta. Vérifier aussi le départ de tous les monteurs pendant
+le REC, la conservation de l'audio capturé ensuite, une réouverture avant clôture,
+un conflit au départ et une arrivée concurrente à la clôture. Les tests `LiveRecordSessionTests` couvrent aussi les
+révisions périmées, l'intégrité des copies et la conservation du circuit de publication.
+Répéter les essais en inversant les rôles de A et B pour l'émission suivante, et vérifier
+que A peut monter pendant que B enregistre sans modifier la configuration des postes.
+
+Sans `--shared-montage` et sans `AU_SHARED_MONTAGE=1`, le mode précédent reste actif.
+
 ### Montage en temps réel, sur le même poste ou sur un autre
 
 1. Configurez l'action Zetta utilisée pour ouvrir l'audio sur tous les postes avec
    `--live-record --live-dir "<dossier partagé>" "%f"`.
-   Le premier poste prépare la session, puis l'opérateur démarre la capture avec le bouton **Enregistrer** ;
-   les autres postes rejoignent le direct pour montage.
+   Le premier poste démarre la capture ; les autres ouvrent le même direct pour montage.
 2. Sur un autre Zetta, demandez le montage de **la même émission** : Audacity retrouve le live automatiquement.
    Sur le poste d'enregistrement, **Fichier > Ouvrir un montage live** permet aussi d'ouvrir plusieurs éditeurs.
    En dehors de Zetta, vous pouvez ouvrir le **WAV brut** de la session par **Fichier > Ouvrir**.

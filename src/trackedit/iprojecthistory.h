@@ -4,6 +4,7 @@
 #pragma once
 
 #include "framework/global/async/channel.h"
+#include "framework/global/async/notification.h"
 #include "framework/global/modularity/imoduleinterface.h"
 #include "framework/global/types/translatablestring.h"
 
@@ -38,6 +39,9 @@ public:
     virtual const muse::TranslatableString lastActionNameAtIdx(size_t idx) const = 0;
 
     virtual muse::async::Channel<HistoryEvent> historyChanged() const = 0;
+    // Emitted by the history adapter when the current state is modified,
+    // without adding an undo entry. Separate from the history-panel channel.
+    virtual muse::async::Notification stateModified() const { return {}; }
 
     virtual void rollbackState() = 0;
 

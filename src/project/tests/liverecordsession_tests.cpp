@@ -211,22 +211,6 @@ TEST_F(LiveRecordSessionTests, ZettaTargetRemainsAvailableForMontageAfterRecordi
     EXPECT_EQ(found, live);
 }
 
-TEST_F(LiveRecordSessionTests, ZettaTargetCanWaitForManualRecordingStart)
-{
-    const QString target = directory.filePath("zetta/emission.-123");
-    LiveRecordSession recorder(directory.path(), target);
-    QString error;
-    ASSERT_TRUE(recorder.claimTarget(error));
-    ASSERT_TRUE(recorder.publishTarget(live, error));
-    setState("ready");
-
-    LiveRecordSession::State state;
-    ASSERT_TRUE(LiveRecordSession::readState(live, state, error)) << error.toStdString();
-    EXPECT_EQ(state, LiveRecordSession::State::Ready);
-    QString found;
-    EXPECT_EQ(LiveRecordSession::findTarget(directory.path(), target, found, error), LiveRecordSession::Lookup::Pending);
-}
-
 TEST_F(LiveRecordSessionTests, MultipleEmissionsWithSameFileNameStayIndependent)
 {
     const QString targetA = directory.filePath("studio-a/emission.-123");
@@ -378,4 +362,323 @@ TEST_F(LiveRecordSessionTests, UnavailableSharedDirectoryIsAnError)
     EXPECT_EQ(LiveRecordSession::findTarget(directory.filePath("missing-share"), "emission.-123", found, error),
               LiveRecordSession::Lookup::Error);
     EXPECT_FALSE(error.isEmpty());
+}
+
+TEST_F(LiveRecordSessionTests, SharedMontagePublishesImmutableNativeSnapshot)
+{
+    QString error;
+    LiveRecordSession::MontageSnapshot initial;
+    ASSERT_TRUE(LiveRecordSession::readMontage(live, initial, error));
+    EXPECT_TRUE(initial.revision.isEmpty());
+    const QJsonObject metadata { { "frames", "123" }, { "rate", 48000 } };
+    LiveRecordSession::MontageSnapshot first;
+    ASSERT_EQ(LiveRecordSession::publishMontage(live, "", render, metadata, first, error),
+              LiveRecordSession::MontageUpdate::Published);
+    EXPECT_FALSE(first.revision.isEmpty());
+    EXPECT_NE(LiveRecordSession::sharedMontagePath(live), LiveRecordSession::submissionPath(live));
+    EXPECT_FALSE(QFile::exists(LiveRecordSession::submissionPath(live)));
+    EXPECT_EQ(readFile(first.projectPath), audio);
+    LiveRecordSession::MontageSnapshot read;
+    ASSERT_TRUE(LiveRecordSession::readMontage(live, read, error));
+    EXPECT_EQ(read.revision, first.revision);
+    EXPECT_EQ(read.metadata, metadata);
+
+    writeFile(render, audio + "new edit");
+    LiveRecordSession::MontageSnapshot second;
+    ASSERT_EQ(LiveRecordSession::publishMontage(live, first.revision, render, metadata, second, error),
+              LiveRecordSession::MontageUpdate::Published);
+    EXPECT_NE(first.revision, second.revision);
+    EXPECT_EQ(readFile(first.projectPath), audio); // Readers of the old revision remain safe.
+    EXPECT_EQ(readFile(second.projectPath), audio + "new edit");
+}
+
+TEST_F(LiveRecordSessionTests, StaleWorkstationCannotOverwriteSharedMontage)
+{
+    QString error;
+    LiveRecordSession::MontageSnapshot first;
+    ASSERT_EQ(LiveRecordSession::publishMontage(live, "", render, {}, first, error),
+              LiveRecordSession::MontageUpdate::Published);
+    const QString current = first.revision;
+    LiveRecordSession::MontageSnapshot stale;
+    EXPECT_EQ(LiveRecordSession::publishMontage(live, "", render, {}, stale, error),
+              LiveRecordSession::MontageUpdate::Conflict);
+    EXPECT_EQ(stale.revision, current);
+    EXPECT_FALSE(error.isEmpty());
+    ASSERT_TRUE(LiveRecordSession::readMontage(live, first, error));
+    EXPECT_EQ(first.revision, current);
+}
+
+TEST_F(LiveRecordSessionTests, SharedMontageRejectsCorruptSnapshot)
+{
+    QString error;
+    LiveRecordSession::MontageSnapshot snapshot;
+    ASSERT_EQ(LiveRecordSession::publishMontage(live, "", render, {}, snapshot, error),
+              LiveRecordSession::MontageUpdate::Published);
+    writeFile(snapshot.projectPath, "corrupt project");
+    EXPECT_FALSE(LiveRecordSession::readMontage(live, snapshot, error));
+    EXPECT_FALSE(error.isEmpty());
+}
+
+TEST_F(LiveRecordSessionTests, SharedMontageCannotSubmitAnOutdatedRevision)
+{
+    QString error;
+    LiveRecordSession::MontageSnapshot first;
+    ASSERT_EQ(LiveRecordSession::publishMontage(live, "", render, {}, first, error),
+              LiveRecordSession::MontageUpdate::Published);
+    LiveRecordSession::MontageSnapshot second;
+    ASSERT_EQ(LiveRecordSession::publishMontage(live, first.revision, render, {}, second, error),
+              LiveRecordSession::MontageUpdate::Published);
+    EXPECT_FALSE(LiveRecordSession::submitMontage(live, first.revision, render, error));
+    EXPECT_FALSE(QFile::exists(LiveRecordSession::submissionPath(live)));
+    EXPECT_FALSE(LiveRecordSession::submit(live, render, error)); // Old editors cannot bypass revision checks.
+    EXPECT_FALSE(QFile::exists(LiveRecordSession::submissionPath(live)));
+}
+
+TEST_F(LiveRecordSessionTests, SharedMontageStillWaitsForRecordingBeforeZettaPublication)
+{
+    QString error;
+    QString rendered;
+    LiveRecordSession::MontageSnapshot snapshot;
+    ASSERT_EQ(LiveRecordSession::publishMontage(live, "", render, {}, snapshot, error),
+              LiveRecordSession::MontageUpdate::Published);
+    EXPECT_FALSE(LiveRecordSession::submitMontage(live, snapshot.revision, render, error));
+    EXPECT_FALSE(LiveRecordSession::publicationReady(live, rendered, error));
+    LiveRecordSession::MontageSnapshot sealed;
+    EXPECT_FALSE(LiveRecordSession::sealMontage(live, sealed, error));
+    setState("done");
+    ASSERT_TRUE(LiveRecordSession::sealMontage(live, sealed, error));
+    ASSERT_TRUE(LiveRecordSession::submitMontage(live, sealed.revision, render, error));
+    const QString frozenRevision = snapshot.revision;
+    EXPECT_EQ(LiveRecordSession::publishMontage(live, frozenRevision, render, {}, snapshot, error),
+              LiveRecordSession::MontageUpdate::Frozen);
+    EXPECT_FALSE(LiveRecordSession::submitMontage(live, frozenRevision, render, error));
+    setState("done");
+    ASSERT_TRUE(LiveRecordSession::publicationReady(live, rendered, error));
+    EXPECT_EQ(readFile(rendered), audio);
+    ASSERT_TRUE(LiveRecordSession::acknowledge(live, error));
+    EXPECT_TRUE(LiveRecordSession::isAcknowledged(live, error));
+}
+
+TEST_F(LiveRecordSessionTests, ConcurrentWorkstationsPublishOnlyOneRevision)
+{
+    QString error;
+    LiveRecordSession::MontageSnapshot first;
+    ASSERT_EQ(LiveRecordSession::publishMontage(live, "", render, {}, first, error),
+              LiveRecordSession::MontageUpdate::Published);
+    LiveRecordSession::MontageUpdate results[2];
+    auto publish = [&](int index) {
+        LiveRecordSession::MontageSnapshot snapshot;
+        QString threadError;
+        results[index] = LiveRecordSession::publishMontage(live, first.revision, render, {}, snapshot, threadError);
+    };
+    std::thread a(publish, 0);
+    std::thread b(publish, 1);
+    a.join();
+    b.join();
+    const int published = int(results[0] == LiveRecordSession::MontageUpdate::Published)
+                          + int(results[1] == LiveRecordSession::MontageUpdate::Published);
+    EXPECT_EQ(published, 1);
+    LiveRecordSession::MontageSnapshot stale;
+    EXPECT_EQ(LiveRecordSession::publishMontage(live, first.revision, render, {}, stale, error),
+              LiveRecordSession::MontageUpdate::Conflict);
+}
+
+TEST_F(LiveRecordSessionTests, SharedMontageFailureCannotChangeCurrentRevision)
+{
+    QString error;
+    LiveRecordSession::MontageSnapshot snapshot;
+    ASSERT_EQ(LiveRecordSession::publishMontage(live, "", render, {}, snapshot, error),
+              LiveRecordSession::MontageUpdate::Published);
+    const QString revision = snapshot.revision;
+    EXPECT_EQ(LiveRecordSession::publishMontage(live, revision, directory.filePath("missing.aup3"), {}, snapshot, error),
+              LiveRecordSession::MontageUpdate::Error);
+    ASSERT_TRUE(LiveRecordSession::readMontage(live, snapshot, error));
+    EXPECT_EQ(snapshot.revision, revision);
+    setState("error");
+    EXPECT_EQ(LiveRecordSession::publishMontage(live, revision, render, {}, snapshot, error),
+              LiveRecordSession::MontageUpdate::Error);
+    EXPECT_FALSE(LiveRecordSession::submitMontage(live, revision, render, error));
+}
+
+TEST_F(LiveRecordSessionTests, RecordingOwnershipBelongsToASessionAndCanChangeForTheNextRecording)
+{
+    const QString target = "//server/Zetta/emission.-123";
+    QString error;
+    QString found;
+    writeFile(live, audio);
+    // The first workstation owns this recording and publishes its result.
+    {
+        LiveRecordSession firstRecorder(directory.path(), target);
+        ASSERT_TRUE(firstRecorder.claimTarget(error));
+        ASSERT_TRUE(firstRecorder.publishTarget(live, error));
+        ASSERT_EQ(LiveRecordSession::findTarget(directory.path(), target, found, error),
+                  LiveRecordSession::Lookup::Found);
+        EXPECT_EQ(found, live);
+        setState("done");
+        ASSERT_TRUE(LiveRecordSession::submit(live, render, error));
+        ASSERT_TRUE(LiveRecordSession::acknowledge(live, error));
+    }
+
+    // A new recorder may take the same target after that session closes.
+    // The former recorder now resolves the new recording as an editor.
+    const QString nextLive = directory.filePath("next-recording.wav");
+    writeFile(nextLive, audio);
+    writeFile(LiveRecordSession::statusPath(nextLive),
+              QJsonDocument(QJsonObject { { "version", 1 }, { "status", "recording" } }).toJson());
+    LiveRecordSession nextRecorder(directory.path(), target);
+    ASSERT_TRUE(nextRecorder.claimTarget(error));
+    ASSERT_TRUE(nextRecorder.publishTarget(nextLive, error));
+    ASSERT_EQ(LiveRecordSession::findTarget(directory.path(), target, found, error),
+              LiveRecordSession::Lookup::Found);
+    EXPECT_EQ(found, nextLive);
+    LiveRecordSession formerRecorder(directory.path(), target);
+    EXPECT_FALSE(formerRecorder.claimTarget(error)); // Joining must not start another REC.
+    EXPECT_TRUE(LiveRecordSession::isAcknowledged(live, error));
+    EXPECT_FALSE(QFile::exists(LiveRecordSession::submissionPath(nextLive)));
+}
+
+TEST_F(LiveRecordSessionTests, CollectiveClosureWaitsForRecordingAndEveryEditor)
+{
+    QString error;
+    const QString a = "11111111-1111-1111-1111-111111111111";
+    const QString b = "22222222-2222-2222-2222-222222222222";
+    ASSERT_TRUE(LiveRecordSession::joinMontage(live, a, "Studio A", error));
+    ASSERT_TRUE(LiveRecordSession::joinMontage(live, b, "Studio B", error));
+    EXPECT_FALSE(LiveRecordSession::submit(live, render, error)); // Even before the first native snapshot.
+    LiveRecordSession::MontageSnapshot current, sealed;
+    ASSERT_EQ(LiveRecordSession::publishMontage(live, "", render, {}, current, error),
+              LiveRecordSession::MontageUpdate::Published);
+    EXPECT_FALSE(LiveRecordSession::submitMontage(live, current.revision, render, error));
+    ASSERT_TRUE(LiveRecordSession::leaveMontage(live, a, current.revision, error));
+    EXPECT_FALSE(LiveRecordSession::sealMontage(live, sealed, error));
+    EXPECT_TRUE(error.isEmpty());
+    setState("done");
+    EXPECT_FALSE(LiveRecordSession::sealMontage(live, sealed, error)); // B can keep editing after REC.
+    ASSERT_EQ(LiveRecordSession::publishMontage(live, current.revision, render, {}, current, error),
+              LiveRecordSession::MontageUpdate::Published);
+    ASSERT_TRUE(LiveRecordSession::leaveMontage(live, b, current.revision, error));
+    ASSERT_TRUE(LiveRecordSession::sealMontage(live, sealed, error));
+    EXPECT_EQ(sealed.revision, current.revision);
+    ASSERT_TRUE(LiveRecordSession::submitMontage(live, sealed.revision, render, error));
+    QString rendered;
+    EXPECT_TRUE(LiveRecordSession::publicationReady(live, rendered, error));
+}
+
+TEST_F(LiveRecordSessionTests, AllEditorsMayLeaveDuringRecordingAndRejoinBeforeClosure)
+{
+    QString error;
+    const QString a = "11111111-1111-1111-1111-111111111111";
+    LiveRecordSession::MontageSnapshot current, sealed;
+    ASSERT_TRUE(LiveRecordSession::joinMontage(live, a, "A", error));
+    ASSERT_EQ(LiveRecordSession::publishMontage(live, "", render, {}, current, error),
+              LiveRecordSession::MontageUpdate::Published);
+    ASSERT_TRUE(LiveRecordSession::leaveMontage(live, a, current.revision, error));
+    EXPECT_FALSE(LiveRecordSession::sealMontage(live, sealed, error));
+    EXPECT_TRUE(error.isEmpty());
+    ASSERT_TRUE(LiveRecordSession::joinMontage(live, a, "A", error));
+    setState("done");
+    EXPECT_FALSE(LiveRecordSession::sealMontage(live, sealed, error));
+    ASSERT_TRUE(LiveRecordSession::leaveMontage(live, a, current.revision, error));
+    EXPECT_TRUE(LiveRecordSession::sealMontage(live, sealed, error));
+}
+
+TEST_F(LiveRecordSessionTests, StaleDepartureKeepsEditorRegisteredUntilItsWorkIsSynchronized)
+{
+    QString error;
+    const QString a = "11111111-1111-1111-1111-111111111111";
+    const QString b = "22222222-2222-2222-2222-222222222222";
+    LiveRecordSession::MontageSnapshot current, sealed;
+    ASSERT_TRUE(LiveRecordSession::joinMontage(live, a, "A", error));
+    ASSERT_TRUE(LiveRecordSession::joinMontage(live, b, "B", error));
+    ASSERT_EQ(LiveRecordSession::publishMontage(live, "", render, {}, current, error),
+              LiveRecordSession::MontageUpdate::Published);
+    const QString oldRevision = current.revision;
+    ASSERT_EQ(LiveRecordSession::publishMontage(live, oldRevision, render, {}, current, error),
+              LiveRecordSession::MontageUpdate::Published);
+    EXPECT_FALSE(LiveRecordSession::leaveMontage(live, a, oldRevision, error));
+    ASSERT_TRUE(LiveRecordSession::leaveMontage(live, b, current.revision, error));
+    setState("done");
+    EXPECT_FALSE(LiveRecordSession::sealMontage(live, sealed, error));
+    ASSERT_TRUE(LiveRecordSession::leaveMontage(live, a, current.revision, error));
+    EXPECT_TRUE(LiveRecordSession::sealMontage(live, sealed, error));
+}
+
+TEST_F(LiveRecordSessionTests, SealedSessionRejectsNewEditorsAndChangesButAllowsRenderRetry)
+{
+    QString error;
+    const QString a = "11111111-1111-1111-1111-111111111111";
+    LiveRecordSession::MontageSnapshot current, sealed;
+    ASSERT_TRUE(LiveRecordSession::joinMontage(live, a, "A", error));
+    ASSERT_EQ(LiveRecordSession::publishMontage(live, "", render, {}, current, error),
+              LiveRecordSession::MontageUpdate::Published);
+    ASSERT_TRUE(LiveRecordSession::leaveMontage(live, a, current.revision, error));
+    setState("done");
+    ASSERT_TRUE(LiveRecordSession::sealMontage(live, sealed, error));
+    EXPECT_FALSE(LiveRecordSession::joinMontage(live, a, "A", error));
+    EXPECT_EQ(LiveRecordSession::publishMontage(live, current.revision, render, {}, current, error),
+              LiveRecordSession::MontageUpdate::Frozen);
+    EXPECT_FALSE(LiveRecordSession::submitMontage(live, sealed.revision, directory.filePath("missing.wav"), error));
+    LiveRecordSession::MontageSnapshot retry;
+    ASSERT_TRUE(LiveRecordSession::sealMontage(live, retry, error));
+    EXPECT_EQ(retry.revision, sealed.revision);
+    EXPECT_TRUE(LiveRecordSession::submitMontage(live, retry.revision, render, error));
+}
+
+TEST_F(LiveRecordSessionTests, MissingPresenceDoesNotReleaseUnfinishedEditor)
+{
+    QString error;
+    const QString a = "11111111-1111-1111-1111-111111111111";
+    LiveRecordSession::MontageSnapshot current, sealed;
+    ASSERT_TRUE(LiveRecordSession::joinMontage(live, a, "Offline studio", error));
+    ASSERT_EQ(LiveRecordSession::publishMontage(live, "", render, {}, current, error),
+              LiveRecordSession::MontageUpdate::Published);
+    setState("done");
+    EXPECT_FALSE(LiveRecordSession::sealMontage(live, sealed, error));
+    EXPECT_TRUE(error.isEmpty()); // No heartbeat exists, but this editor has not left.
+    EXPECT_FALSE(LiveRecordSession::submit(live, render, error));
+    EXPECT_FALSE(LiveRecordSession::submitMontage(live, current.revision, render, error));
+    EXPECT_FALSE(QFile::exists(LiveRecordSession::submissionPath(live)));
+}
+
+TEST_F(LiveRecordSessionTests, JoiningAndFinalizingConcurrentlyCannotFreezeAnActiveEditor)
+{
+    QString error;
+    const QString a = "11111111-1111-1111-1111-111111111111";
+    const QString b = "22222222-2222-2222-2222-222222222222";
+    LiveRecordSession::MontageSnapshot current;
+    ASSERT_TRUE(LiveRecordSession::joinMontage(live, a, "A", error));
+    ASSERT_EQ(LiveRecordSession::publishMontage(live, "", render, {}, current, error),
+              LiveRecordSession::MontageUpdate::Published);
+    ASSERT_TRUE(LiveRecordSession::leaveMontage(live, a, current.revision, error));
+    setState("done");
+    bool joined = false, sealed = false;
+    std::thread joining([&] { QString e; joined = LiveRecordSession::joinMontage(live, b, "B", e); });
+    std::thread sealing([&] { QString e; LiveRecordSession::MontageSnapshot result;
+                             sealed = LiveRecordSession::sealMontage(live, result, e); });
+    joining.join();
+    sealing.join();
+    EXPECT_FALSE(joined && sealed);
+    if (joined) {
+        LiveRecordSession::MontageSnapshot result;
+        EXPECT_FALSE(LiveRecordSession::sealMontage(live, result, error));
+        EXPECT_TRUE(LiveRecordSession::leaveMontage(live, b, current.revision, error));
+    }
+}
+
+TEST_F(LiveRecordSessionTests, CorruptParticipationRegistryCannotCloseOrPublishTheMontage)
+{
+    QString error;
+    const QString a = "11111111-1111-1111-1111-111111111111";
+    LiveRecordSession::MontageSnapshot current, sealed;
+    ASSERT_TRUE(LiveRecordSession::joinMontage(live, a, "A", error));
+    ASSERT_EQ(LiveRecordSession::publishMontage(live, "", render, {}, current, error),
+              LiveRecordSession::MontageUpdate::Published);
+    writeFile(directory.filePath("recording.editors.json"),
+              "{\"version\":1,\"editors\":null,\"sealed\":false}");
+    setState("done");
+    EXPECT_FALSE(LiveRecordSession::sealMontage(live, sealed, error));
+    EXPECT_FALSE(error.isEmpty());
+    EXPECT_FALSE(LiveRecordSession::leaveMontage(live, a, current.revision, error));
+    EXPECT_FALSE(LiveRecordSession::submitMontage(live, current.revision, render, error));
+    EXPECT_FALSE(QFile::exists(LiveRecordSession::submissionPath(live)));
 }

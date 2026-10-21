@@ -111,6 +111,7 @@ void Au3ProjectHistory::modifyState(bool autoSave)
     }
     auto& project = projectRef();
     ::ProjectHistory::Get(project).ModifyState(autoSave);
+    m_stateModified.notify();
 }
 
 void Au3ProjectHistory::modifyState(const std::type_index& restorerType)
@@ -120,6 +121,7 @@ void Au3ProjectHistory::modifyState(const std::type_index& restorerType)
     }
     auto& project = projectRef();
     ::ProjectHistory::Get(project).ModifyState(restorerType);
+    m_stateModified.notify();
 }
 
 void Au3ProjectHistory::markUnsaved()
@@ -127,6 +129,7 @@ void Au3ProjectHistory::markUnsaved()
     LOGD() << "markUnsaved()";
     auto& project = projectRef();
     ::UndoManager::Get(project).MarkUnsaved();
+    m_stateModified.notify();
 }
 
 void Au3ProjectHistory::undoRedoToIndex(size_t index)

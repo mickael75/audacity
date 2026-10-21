@@ -81,6 +81,8 @@ set(MODULE_SRC
     ${CMAKE_CURRENT_LIST_DIR}/internal/liverecordfollower.h
     ${CMAKE_CURRENT_LIST_DIR}/internal/liverecordsession.cpp
     ${CMAKE_CURRENT_LIST_DIR}/internal/liverecordsession.h
+    ${CMAKE_CURRENT_LIST_DIR}/internal/livesessionpresence.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/internal/livesessionpresence.h
     ${CMAKE_CURRENT_LIST_DIR}/internal/projectprovider.h
     ${CMAKE_CURRENT_LIST_DIR}/internal/recentfilescontroller.cpp
     ${CMAKE_CURRENT_LIST_DIR}/internal/recentfilescontroller.h
@@ -96,6 +98,8 @@ set(MODULE_SRC
 
     ${CMAKE_CURRENT_LIST_DIR}/view/projectspagemodel.cpp
     ${CMAKE_CURRENT_LIST_DIR}/view/projectspagemodel.h
+    ${CMAKE_CURRENT_LIST_DIR}/view/livesessionstatusmodel.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/view/livesessionstatusmodel.h
     ${CMAKE_CURRENT_LIST_DIR}/view/abstractitemmodel.cpp
     ${CMAKE_CURRENT_LIST_DIR}/view/abstractitemmodel.h
     ${CMAKE_CURRENT_LIST_DIR}/view/recentprojectsmodel.cpp

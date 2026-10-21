@@ -36,6 +36,7 @@
 
 #include "view/projectpropertiesmodel.h"
 #include "view/projectspagemodel.h"
+#include "view/livesessionstatusmodel.h"
 #include "view/recentprojectsmodel.h"
 #include "view/cloudprojectsmodel.h"
 #include "view/cloudprojectsyncmodel.h"
@@ -103,6 +104,7 @@ void ProjectModule::registerResources()
 
 void ProjectModule::registerUiTypes()
 {
+    qmlRegisterType<LiveSessionStatusModel>("Audacity.Project", 1, 0, "LiveSessionStatusModel");
     qmlRegisterType<ProjectsPageModel>("Audacity.Project", 1, 0, "ProjectsPageModel");
     qmlRegisterUncreatableType<AbstractItemModel>("Audacity.Project", 1, 0, "AbstractItemModel",
                                                   "Not creatable as it is an abstract type");
